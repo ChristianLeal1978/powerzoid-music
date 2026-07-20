@@ -1,7 +1,10 @@
 /**
  * Spotify Now Playing — GNOME Shell Extension
- * Shows the current track and artist from Spotify in the top bar.
- * Click the label to skip to the next track.
+ *
+ * Layout de la barra:  [ ♫  Artista – Título ][ ▶/⏸ ]
+ *
+ * Click en el texto   → siguiente pista (Next)
+ * Click en el ícono   → alternar play/pausa (PlayPause)
  */
 
 import GLib from 'gi://GLib';
@@ -18,49 +21,56 @@ const MPRIS_PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player';
 const MAX_TEXT_LENGTH = 50;
 const IDLE_TEXT       = '♫';
 
-const STATUS_ICONS = {
-    'Playing': '▶',
-    'Paused' : '⏸',
-    'Stopped': '⏹',
-};
-
 export default class SpotifyNowPlayingExtension {
     constructor(metadata) {
         this._metadata            = metadata;
         this._indicator           = null;
-        this._label               = null;
+        this._songLabel           = null;
+        this._playPauseLabel      = null;
         this._proxy               = null;
         this._watcherId           = null;
         this._propertiesChangedId = null;
-        this._clickHandlerId      = null;
     }
 
     enable() {
         this._indicator = new PanelMenu.Button(0.0, 'Spotify Now Playing', true);
 
-        this._label = new St.Label({
+        const box = new St.BoxLayout({ style: 'spacing: 2px;' });
+
+        // Zona izquierda: nombre de la canción (click → siguiente)
+        this._songLabel = new St.Label({
             text: IDLE_TEXT,
             y_align: Clutter.ActorAlign.CENTER,
-            // No font-size: inherits the shell theme font
-            style: 'padding: 0 6px;',
+            reactive: true,
+            style: 'padding: 0 6px 0 6px;',
+        });
+        this._songLabel.connect('button-press-event', (_actor, event) => {
+            if (event.get_button() === 1) {
+                this._callMpris('Next');
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
         });
 
-        this._indicator.add_child(this._label);
-
-        // Click → next track
-        this._clickHandlerId = this._indicator.connect(
-            'button-press-event',
-            (_actor, event) => {
-                // Left click only
-                if (event.get_button() === 1) {
-                    this._skipToNext();
-                    return Clutter.EVENT_STOP;
-                }
-                return Clutter.EVENT_PROPAGATE;
+        // Zona derecha: ícono play/pausa (click → alterna)
+        this._playPauseLabel = new St.Label({
+            text: '',
+            y_align: Clutter.ActorAlign.CENTER,
+            reactive: true,
+            style: 'padding: 0 6px 0 2px;',
+        });
+        this._playPauseLabel.connect('button-press-event', (_actor, event) => {
+            if (event.get_button() === 1) {
+                this._callMpris('PlayPause');
+                return Clutter.EVENT_STOP;
             }
-        );
+            return Clutter.EVENT_PROPAGATE;
+        });
 
-        // Left side of the panel
+        box.add_child(this._songLabel);
+        box.add_child(this._playPauseLabel);
+        this._indicator.add_child(box);
+
         Main.panel.addToStatusArea('spotify-now-playing', this._indicator, 1, 'left');
 
         this._startWatching();
@@ -70,17 +80,12 @@ export default class SpotifyNowPlayingExtension {
         this._stopWatching();
 
         if (this._indicator) {
-            if (this._clickHandlerId !== null) {
-                this._indicator.disconnect(this._clickHandlerId);
-                this._clickHandlerId = null;
-            }
             this._indicator.destroy();
             this._indicator = null;
         }
-        this._label = null;
+        this._songLabel      = null;
+        this._playPauseLabel = null;
     }
-
-    // ── D-Bus watcher ────────────────────────────────────────────────────────
 
     _startWatching() {
         this._watcherId = Gio.bus_watch_name(
@@ -99,8 +104,6 @@ export default class SpotifyNowPlayingExtension {
             this._watcherId = null;
         }
     }
-
-    // ── Proxy management ─────────────────────────────────────────────────────
 
     _onSpotifyAppeared(_connection, _name, _nameOwner) {
         Gio.DBusProxy.new(
@@ -128,7 +131,8 @@ export default class SpotifyNowPlayingExtension {
 
     _onSpotifyVanished(_connection, _name) {
         this._destroyProxy();
-        this._setLabel(IDLE_TEXT);
+        this._songLabel?.set_text(IDLE_TEXT);
+        this._playPauseLabel?.set_text('');
     }
 
     _destroyProxy() {
@@ -141,27 +145,20 @@ export default class SpotifyNowPlayingExtension {
         }
     }
 
-    // ── MPRIS2 actions ───────────────────────────────────────────────────────
-
-    _skipToNext() {
+    _callMpris(method) {
         if (!this._proxy) return;
         this._proxy.call(
-            'Next',
+            method,
             null,
             Gio.DBusCallFlags.NONE,
             -1,
             null,
             (proxy, result) => {
-                try {
-                    proxy.call_finish(result);
-                } catch (e) {
-                    console.error(`[spotify-now-playing] Next failed: ${e.message}`);
-                }
+                try { proxy.call_finish(result); }
+                catch (e) { console.error(`[spotify-now-playing] ${method} failed: ${e.message}`); }
             }
         );
     }
-
-    // ── Property change handler ───────────────────────────────────────────────
 
     _onPropertiesChanged(_proxy, changed, _invalidated) {
         try {
@@ -173,17 +170,16 @@ export default class SpotifyNowPlayingExtension {
         }
     }
 
-    // ── Display update ────────────────────────────────────────────────────────
-
     _updateDisplay() {
-        if (!this._proxy || !this._label) return;
+        if (!this._proxy || !this._songLabel || !this._playPauseLabel) return;
 
         try {
             const statusVariant   = this._proxy.get_cached_property('PlaybackStatus');
             const metadataVariant = this._proxy.get_cached_property('Metadata');
 
             if (!metadataVariant) {
-                this._setLabel(IDLE_TEXT);
+                this._songLabel.set_text(IDLE_TEXT);
+                this._playPauseLabel.set_text('');
                 return;
             }
 
@@ -194,22 +190,19 @@ export default class SpotifyNowPlayingExtension {
                 ? artistRaw.join(', ')
                 : (artistRaw ?? '–');
 
-            const status = statusVariant ? statusVariant.unpack() : 'Stopped';
-            const icon   = STATUS_ICONS[status] ?? '♫';
+            const status        = statusVariant ? statusVariant.unpack() : 'Stopped';
+            const playPauseIcon = status === 'Playing' ? '⏸' : '▶';
+            this._playPauseLabel.set_text(playPauseIcon);
 
-            let text = `${artist} – ${title}`;
+            let text = `♫  ${artist} – ${title}`;
             if (text.length > MAX_TEXT_LENGTH)
                 text = text.slice(0, MAX_TEXT_LENGTH - 1) + '…';
+            this._songLabel.set_text(text);
 
-            this._setLabel(`${icon}  ${text}`);
         } catch (e) {
             console.error(`[spotify-now-playing] Display update error: ${e.message}`);
-            this._setLabel(IDLE_TEXT);
+            this._songLabel?.set_text(IDLE_TEXT);
+            this._playPauseLabel?.set_text('');
         }
-    }
-
-    _setLabel(text) {
-        if (this._label)
-            this._label.set_text(text);
     }
 }
