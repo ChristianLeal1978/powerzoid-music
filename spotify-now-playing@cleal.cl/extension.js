@@ -42,7 +42,7 @@ export default class SpotifyNowPlayingExtension {
             text: IDLE_TEXT,
             y_align: Clutter.ActorAlign.CENTER,
             reactive: true,
-            style: 'padding: 0 6px 0 6px;',
+            style: 'padding: 0 6px 0 6px; font-size: 11px;',
         });
         this._songLabel.connect('button-press-event', (_actor, event) => {
             if (event.get_button() === 1) {
@@ -57,7 +57,7 @@ export default class SpotifyNowPlayingExtension {
             text: '',
             y_align: Clutter.ActorAlign.CENTER,
             reactive: true,
-            style: 'padding: 0 6px 0 2px;',
+            style: 'padding: 0 6px 0 2px; font-size: 11px;',
         });
         this._playPauseLabel.connect('button-press-event', (_actor, event) => {
             if (event.get_button() === 1) {
