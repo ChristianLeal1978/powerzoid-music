@@ -3,8 +3,9 @@
  *
  * Layout de la barra:  [ ♫  Artista – Título ][ ▶/⏸ ]
  *
- * Click en el texto   → siguiente pista (Next)
- * Click en el ícono   → alternar play/pausa (PlayPause)
+ * Click izquierdo en texto   → siguiente pista (Next)
+ * Click derecho en texto     → menú: tamaño de letra
+ * Click en el ícono          → alternar play/pausa (PlayPause)
  */
 
 import GLib from 'gi://GLib';
@@ -13,13 +14,17 @@ import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-const SPOTIFY_BUS_NAME   = 'org.mpris.MediaPlayer2.spotify';
-const MPRIS_OBJECT_PATH  = '/org/mpris/MediaPlayer2';
-const MPRIS_PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player';
+const SPOTIFY_BUS_NAME    = 'org.mpris.MediaPlayer2.spotify';
+const MPRIS_OBJECT_PATH   = '/org/mpris/MediaPlayer2';
+const MPRIS_PLAYER_IFACE  = 'org.mpris.MediaPlayer2.Player';
 
-const MAX_TEXT_LENGTH = 50;
-const IDLE_TEXT       = '♫';
+const MAX_TEXT_LENGTH     = 50;
+const IDLE_TEXT           = '♫';
+const DEFAULT_FONT_SIZE   = 13;
+const MIN_FONT_SIZE       = 8;
+const MAX_FONT_SIZE       = 20;
 
 export default class SpotifyNowPlayingExtension {
     constructor(metadata) {
@@ -30,23 +35,34 @@ export default class SpotifyNowPlayingExtension {
         this._proxy               = null;
         this._watcherId           = null;
         this._propertiesChangedId = null;
+        this._fontSize            = DEFAULT_FONT_SIZE;
+        this._fontSizeItem        = null;
     }
 
     enable() {
-        this._indicator = new PanelMenu.Button(0.0, 'Spotify Now Playing', true);
+        this._loadSettings();
+
+        // false → PanelMenu crea el menú popup automáticamente
+        this._indicator = new PanelMenu.Button(0.0, 'Spotify Now Playing', false);
 
         const box = new St.BoxLayout({ style: 'spacing: 2px;' });
 
-        // Zona izquierda: nombre de la canción (click → siguiente)
+        // Zona izquierda: nombre de la canción
+        // Click izquierdo → siguiente pista | Click derecho → menú
         this._songLabel = new St.Label({
             text: IDLE_TEXT,
             y_align: Clutter.ActorAlign.CENTER,
             reactive: true,
-            style: 'padding: 0 6px 0 6px; font-size: 11px;',
+            style: this._labelStyle(),
         });
         this._songLabel.connect('button-press-event', (_actor, event) => {
-            if (event.get_button() === 1) {
+            const button = event.get_button();
+            if (button === 1) {
                 this._callMpris('Next');
+                return Clutter.EVENT_STOP;
+            }
+            if (button === 3) {
+                this._indicator.menu.toggle();
                 return Clutter.EVENT_STOP;
             }
             return Clutter.EVENT_PROPAGATE;
@@ -57,7 +73,7 @@ export default class SpotifyNowPlayingExtension {
             text: '',
             y_align: Clutter.ActorAlign.CENTER,
             reactive: true,
-            style: 'padding: 0 6px 0 2px; font-size: 11px;',
+            style: this._playPauseStyle(),
         });
         this._playPauseLabel.connect('button-press-event', (_actor, event) => {
             if (event.get_button() === 1) {
@@ -70,6 +86,8 @@ export default class SpotifyNowPlayingExtension {
         box.add_child(this._songLabel);
         box.add_child(this._playPauseLabel);
         this._indicator.add_child(box);
+
+        this._buildMenu();
 
         Main.panel.addToStatusArea('spotify-now-playing', this._indicator, 1, 'left');
 
@@ -85,7 +103,102 @@ export default class SpotifyNowPlayingExtension {
         }
         this._songLabel      = null;
         this._playPauseLabel = null;
+        this._fontSizeItem   = null;
     }
+
+    // ─── Menú contextual ───────────────────────────────────────────────────────
+
+    _buildMenu() {
+        // Ítem informativo: tamaño actual (no clickeable)
+        this._fontSizeItem = new PopupMenu.PopupMenuItem(
+            this._fontSizeLabel(), { reactive: false }
+        );
+        this._fontSizeItem.label.set_style('color: #aaa; font-style: italic;');
+        this._indicator.menu.addMenuItem(this._fontSizeItem);
+
+        this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        const increaseItem = new PopupMenu.PopupMenuItem('A+   Aumentar letra');
+        increaseItem.connect('activate', () => this._changeFontSize(1));
+        this._indicator.menu.addMenuItem(increaseItem);
+
+        const decreaseItem = new PopupMenu.PopupMenuItem('A−   Reducir letra');
+        decreaseItem.connect('activate', () => this._changeFontSize(-1));
+        this._indicator.menu.addMenuItem(decreaseItem);
+
+        this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        const resetItem = new PopupMenu.PopupMenuItem('↺    Restablecer');
+        resetItem.connect('activate', () => {
+            this._fontSize = DEFAULT_FONT_SIZE;
+            this._applyFontSize();
+            this._saveSettings();
+        });
+        this._indicator.menu.addMenuItem(resetItem);
+    }
+
+    _fontSizeLabel() {
+        return `Tamaño: ${this._fontSize} px`;
+    }
+
+    _changeFontSize(delta) {
+        this._fontSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, this._fontSize + delta));
+        this._applyFontSize();
+        this._saveSettings();
+    }
+
+    _applyFontSize() {
+        this._songLabel?.set_style(this._labelStyle());
+        this._playPauseLabel?.set_style(this._playPauseStyle());
+        this._fontSizeItem?.label.set_text(this._fontSizeLabel());
+    }
+
+    _labelStyle() {
+        return `padding: 0 6px 0 6px; font-size: ${this._fontSize}px;`;
+    }
+
+    _playPauseStyle() {
+        return `padding: 0 6px 0 2px; font-size: ${this._fontSize}px;`;
+    }
+
+    // ─── Persistencia ──────────────────────────────────────────────────────────
+
+    _settingsPath() {
+        return GLib.build_filenamev([
+            GLib.get_user_config_dir(), 'spotify-now-playing-gnome', 'settings.json'
+        ]);
+    }
+
+    _loadSettings() {
+        try {
+            const file = Gio.File.new_for_path(this._settingsPath());
+            const [ok, contents] = file.load_contents(null);
+            if (ok) {
+                const data = JSON.parse(new TextDecoder().decode(contents));
+                this._fontSize = Number.isInteger(data.fontSize) ? data.fontSize : DEFAULT_FONT_SIZE;
+            }
+        } catch (_e) {
+            this._fontSize = DEFAULT_FONT_SIZE;
+        }
+    }
+
+    _saveSettings() {
+        try {
+            const dir = GLib.path_get_dirname(this._settingsPath());
+            GLib.mkdir_with_parents(dir, 0o755);
+            const file = Gio.File.new_for_path(this._settingsPath());
+            const data = new TextEncoder().encode(JSON.stringify({ fontSize: this._fontSize }));
+            file.replace_contents(
+                data, null, false,
+                Gio.FileCreateFlags.REPLACE_DESTINATION,
+                null
+            );
+        } catch (e) {
+            console.error(`[spotify-now-playing] Settings save failed: ${e.message}`);
+        }
+    }
+
+    // ─── D-Bus / MPRIS ─────────────────────────────────────────────────────────
 
     _startWatching() {
         this._watcherId = Gio.bus_watch_name(
