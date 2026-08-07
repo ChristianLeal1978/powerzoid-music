@@ -35,12 +35,22 @@ const PROGRESS_BAR_WIDTH   = 200;
 const PROGRESS_UPDATE_MS   = 1000;
 const HOVER_HIDE_DELAY_MS  = 150;
 
-const ART_CACHE_PATH = GLib.build_filenamev([
-    GLib.get_user_cache_dir(), 'spotify-now-playing-gnome', 'cover.jpg'
+const ART_CACHE_DIR = GLib.build_filenamev([
+    GLib.get_user_cache_dir(), 'spotify-now-playing-gnome'
 ]);
+
+function _debugMarker(tag) {
+    try {
+        const file = Gio.File.new_for_path('/tmp/spotify_debug_marker.txt');
+        const stream = file.append_to(Gio.FileCreateFlags.NONE, null);
+        stream.write(`${GLib.DateTime.new_now_local().format('%H:%M:%S')} ${tag}\n`, null);
+        stream.close(null);
+    } catch (e) { /* ignore */ }
+}
 
 export default class SpotifyNowPlayingExtension {
     constructor(metadata) {
+        _debugMarker('constructor');
         this._metadata            = metadata;
         this._indicator           = null;
         this._songLabel           = null;
@@ -66,6 +76,7 @@ export default class SpotifyNowPlayingExtension {
     }
 
     enable() {
+        _debugMarker('enable');
         this._loadSettings();
 
         // false → PanelMenu crea el menú popup automáticamente
@@ -254,6 +265,7 @@ export default class SpotifyNowPlayingExtension {
     }
 
     _onSpotifyAppeared(_connection, _name, _nameOwner) {
+        _debugMarker('onSpotifyAppeared');
         Gio.DBusProxy.new(
             Gio.DBus.session,
             Gio.DBusProxyFlags.NONE,
@@ -323,6 +335,7 @@ export default class SpotifyNowPlayingExtension {
 
     _updateDisplay() {
         if (!this._proxy || !this._songLabel) return;
+        _debugMarker('updateDisplay');
 
         try {
             const metadataVariant = this._proxy.get_cached_property('Metadata');
@@ -355,6 +368,7 @@ export default class SpotifyNowPlayingExtension {
             this._updateProgress(0);
 
             const artUrl = metadata['mpris:artUrl'] ?? null;
+            _debugMarker(`artUrl=${artUrl} lastArtUrl=${this._lastArtUrl}`);
             if (artUrl !== this._lastArtUrl) {
                 this._lastArtUrl = artUrl;
                 this._loadCoverArt(artUrl);
@@ -557,6 +571,7 @@ export default class SpotifyNowPlayingExtension {
     }
 
     _loadCoverArt(artUrl) {
+        _debugMarker(`loadCoverArt artUrl=${artUrl}`);
         this._artCancellable?.cancel();
         this._popupCoverIcon?.set_gicon(null);
 
@@ -566,21 +581,33 @@ export default class SpotifyNowPlayingExtension {
         this._artCancellable = cancellable;
 
         Gio.File.new_for_uri(artUrl).load_contents_async(cancellable, (file, result) => {
+            _debugMarker('loadCoverArt callback');
             try {
                 const [, contents] = file.load_contents_finish(result);
-                this._saveCoverArt(contents, cancellable);
+                _debugMarker(`descarga OK bytes=${contents.length}`);
+                this._saveCoverArt(contents, artUrl, cancellable);
             } catch (e) {
                 if (!cancellable.is_cancelled())
                     console.error(`[spotify-now-playing] Cover art fetch failed: ${e.message}`);
+                else
+                    _debugMarker('descarga cancelada');
             }
         });
+        _debugMarker('load_contents_async disparado');
     }
 
-    _saveCoverArt(contents, cancellable) {
+    // Cada artUrl se cachea en su propio archivo: St.TextureCache indexa las
+    // texturas por ruta, así que sobrescribir siempre el mismo archivo hace
+    // que el shell siga mostrando la imagen vieja al cambiar de canción.
+    _artCachePathFor(artUrl) {
+        const hash = GLib.compute_checksum_for_string(GLib.ChecksumType.MD5, artUrl, -1);
+        return GLib.build_filenamev([ART_CACHE_DIR, `cover-${hash}.jpg`]);
+    }
+
+    _saveCoverArt(contents, artUrl, cancellable) {
         try {
-            const dir = GLib.path_get_dirname(ART_CACHE_PATH);
-            GLib.mkdir_with_parents(dir, 0o755);
-            const cacheFile = Gio.File.new_for_path(ART_CACHE_PATH);
+            GLib.mkdir_with_parents(ART_CACHE_DIR, 0o755);
+            const cacheFile = Gio.File.new_for_path(this._artCachePathFor(artUrl));
             cacheFile.replace_contents_async(
                 contents, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, cancellable,
                 (file, result) => {

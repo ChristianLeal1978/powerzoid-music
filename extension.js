@@ -568,19 +568,27 @@ export default class SpotifyNowPlayingExtension {
         Gio.File.new_for_uri(artUrl).load_contents_async(cancellable, (file, result) => {
             try {
                 const [, contents] = file.load_contents_finish(result);
-                this._saveCoverArt(contents, cancellable);
+                this._saveCoverArt(contents, artUrl, cancellable);
             } catch (e) {
                 if (!cancellable.is_cancelled())
                     console.error(`[spotify-now-playing] Cover art fetch failed: ${e.message}`);
+                else
             }
         });
     }
 
-    _saveCoverArt(contents, cancellable) {
+    // Cada artUrl se cachea en su propio archivo: St.TextureCache indexa las
+    // texturas por ruta, así que sobrescribir siempre el mismo archivo hace
+    // que el shell siga mostrando la imagen vieja al cambiar de canción.
+    _artCachePathFor(artUrl) {
+        const hash = GLib.compute_checksum_for_string(GLib.ChecksumType.MD5, artUrl, -1);
+        return GLib.build_filenamev([ART_CACHE_DIR, `cover-${hash}.jpg`]);
+    }
+
+    _saveCoverArt(contents, artUrl, cancellable) {
         try {
-            const dir = GLib.path_get_dirname(ART_CACHE_PATH);
-            GLib.mkdir_with_parents(dir, 0o755);
-            const cacheFile = Gio.File.new_for_path(ART_CACHE_PATH);
+            GLib.mkdir_with_parents(ART_CACHE_DIR, 0o755);
+            const cacheFile = Gio.File.new_for_path(this._artCachePathFor(artUrl));
             cacheFile.replace_contents_async(
                 contents, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, cancellable,
                 (file, result) => {
