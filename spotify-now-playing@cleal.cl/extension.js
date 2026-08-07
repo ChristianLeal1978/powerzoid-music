@@ -28,10 +28,10 @@ const DEFAULT_FONT_SIZE   = 13;
 const MIN_FONT_SIZE       = 8;
 const MAX_FONT_SIZE       = 20;
 
-const POPUP_WIDTH          = 260;
-const POPUP_ART_SIZE       = 64;
+const POPUP_WIDTH          = 220;
+const POPUP_ART_SIZE       = 192;
 const POPUP_TEXT_MAX_LEN   = 40;
-const PROGRESS_BAR_WIDTH   = 180;
+const PROGRESS_BAR_WIDTH   = 200;
 const PROGRESS_UPDATE_MS   = 1000;
 const HOVER_HIDE_DELAY_MS  = 150;
 
@@ -409,35 +409,35 @@ export default class SpotifyNowPlayingExtension {
                    'border: 1px solid rgba(255,255,255,0.1);',
         });
 
-        const topBox = new St.BoxLayout({ style: 'spacing: 10px;' });
-
         this._popupCoverIcon = new St.Icon({
             icon_size: POPUP_ART_SIZE,
-            style: `width: ${POPUP_ART_SIZE}px; height: ${POPUP_ART_SIZE}px; border-radius: 4px;`,
+            x_align: Clutter.ActorAlign.CENTER,
+            style: `width: ${POPUP_ART_SIZE}px; height: ${POPUP_ART_SIZE}px; border-radius: 6px;`,
         });
+        this._popup.add_child(this._popupCoverIcon);
 
         const infoBox = new St.BoxLayout({
             vertical: true,
-            y_align: Clutter.ActorAlign.CENTER,
+            x_align: Clutter.ActorAlign.CENTER,
             style: 'spacing: 4px;',
         });
 
         this._popupTitleLabel = new St.Label({
-            text: '', style: 'font-weight: bold; font-size: 13px;',
+            text: '', x_align: Clutter.ActorAlign.CENTER,
+            style: 'font-weight: bold; font-size: 13px;',
         });
         this._popupArtistLabel = new St.Label({
-            text: '', style: 'color: #bbb; font-size: 11px;',
+            text: '', x_align: Clutter.ActorAlign.CENTER,
+            style: 'color: #bbb; font-size: 11px;',
         });
 
         infoBox.add_child(this._popupTitleLabel);
         infoBox.add_child(this._popupArtistLabel);
-
-        topBox.add_child(this._popupCoverIcon);
-        topBox.add_child(infoBox);
-        this._popup.add_child(topBox);
+        this._popup.add_child(infoBox);
 
         this._popupProgressTrack = new St.Widget({
             layout_manager: new Clutter.BinLayout(),
+            x_align: Clutter.ActorAlign.CENTER,
             style: `width: ${PROGRESS_BAR_WIDTH}px; height: 4px; border-radius: 2px; ` +
                    'background-color: rgba(255,255,255,0.2);',
         });
@@ -450,7 +450,8 @@ export default class SpotifyNowPlayingExtension {
         this._popup.add_child(this._popupProgressTrack);
 
         this._popupDurationLabel = new St.Label({
-            text: '0:00 / 0:00', style: 'font-size: 10px; color: #bbb;',
+            text: '0:00 / 0:00', x_align: Clutter.ActorAlign.CENTER,
+            style: 'font-size: 10px; color: #bbb;',
         });
         this._popup.add_child(this._popupDurationLabel);
 
