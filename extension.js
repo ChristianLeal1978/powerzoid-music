@@ -572,7 +572,6 @@ export default class SpotifyNowPlayingExtension {
             } catch (e) {
                 if (!cancellable.is_cancelled())
                     console.error(`[spotify-now-playing] Cover art fetch failed: ${e.message}`);
-                else
             }
         });
     }

@@ -39,18 +39,8 @@ const ART_CACHE_DIR = GLib.build_filenamev([
     GLib.get_user_cache_dir(), 'spotify-now-playing-gnome'
 ]);
 
-function _debugMarker(tag) {
-    try {
-        const file = Gio.File.new_for_path('/tmp/spotify_debug_marker.txt');
-        const stream = file.append_to(Gio.FileCreateFlags.NONE, null);
-        stream.write(`${GLib.DateTime.new_now_local().format('%H:%M:%S')} ${tag}\n`, null);
-        stream.close(null);
-    } catch (e) { /* ignore */ }
-}
-
 export default class SpotifyNowPlayingExtension {
     constructor(metadata) {
-        _debugMarker('constructor');
         this._metadata            = metadata;
         this._indicator           = null;
         this._songLabel           = null;
@@ -76,7 +66,6 @@ export default class SpotifyNowPlayingExtension {
     }
 
     enable() {
-        _debugMarker('enable');
         this._loadSettings();
 
         // false → PanelMenu crea el menú popup automáticamente
@@ -265,7 +254,6 @@ export default class SpotifyNowPlayingExtension {
     }
 
     _onSpotifyAppeared(_connection, _name, _nameOwner) {
-        _debugMarker('onSpotifyAppeared');
         Gio.DBusProxy.new(
             Gio.DBus.session,
             Gio.DBusProxyFlags.NONE,
@@ -335,7 +323,6 @@ export default class SpotifyNowPlayingExtension {
 
     _updateDisplay() {
         if (!this._proxy || !this._songLabel) return;
-        _debugMarker('updateDisplay');
 
         try {
             const metadataVariant = this._proxy.get_cached_property('Metadata');
@@ -368,7 +355,6 @@ export default class SpotifyNowPlayingExtension {
             this._updateProgress(0);
 
             const artUrl = metadata['mpris:artUrl'] ?? null;
-            _debugMarker(`artUrl=${artUrl} lastArtUrl=${this._lastArtUrl}`);
             if (artUrl !== this._lastArtUrl) {
                 this._lastArtUrl = artUrl;
                 this._loadCoverArt(artUrl);
@@ -571,7 +557,6 @@ export default class SpotifyNowPlayingExtension {
     }
 
     _loadCoverArt(artUrl) {
-        _debugMarker(`loadCoverArt artUrl=${artUrl}`);
         this._artCancellable?.cancel();
         this._popupCoverIcon?.set_gicon(null);
 
@@ -581,19 +566,14 @@ export default class SpotifyNowPlayingExtension {
         this._artCancellable = cancellable;
 
         Gio.File.new_for_uri(artUrl).load_contents_async(cancellable, (file, result) => {
-            _debugMarker('loadCoverArt callback');
             try {
                 const [, contents] = file.load_contents_finish(result);
-                _debugMarker(`descarga OK bytes=${contents.length}`);
                 this._saveCoverArt(contents, artUrl, cancellable);
             } catch (e) {
                 if (!cancellable.is_cancelled())
                     console.error(`[spotify-now-playing] Cover art fetch failed: ${e.message}`);
-                else
-                    _debugMarker('descarga cancelada');
             }
         });
-        _debugMarker('load_contents_async disparado');
     }
 
     // Cada artUrl se cachea en su propio archivo: St.TextureCache indexa las
