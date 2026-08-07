@@ -1,13 +1,13 @@
 /**
  * Spotify Now Playing — GNOME Shell Extension
  *
- * Layout de la barra:  [ ♫  Artista – Título ][ ▶/⏸ ]
+ * Layout de la barra:  [ ♫  Artista – Título ]
  *
  * Click izquierdo en texto   → siguiente pista (Next)
  * Click derecho en texto     → menú: tamaño de letra
- * Click en el ícono          → alternar play/pausa (PlayPause)
  * Hover sobre la extensión   → panel con carátula, artista, título,
  *                               duración y progreso de la canción
+ * Click en la carátula       → alternar play/pausa (PlayPause)
  */
 
 import GLib from 'gi://GLib';
@@ -44,7 +44,6 @@ export default class SpotifyNowPlayingExtension {
         this._metadata            = metadata;
         this._indicator           = null;
         this._songLabel           = null;
-        this._playPauseLabel      = null;
         this._proxy               = null;
         this._watcherId           = null;
         this._propertiesChangedId = null;
@@ -95,29 +94,13 @@ export default class SpotifyNowPlayingExtension {
             return Clutter.EVENT_PROPAGATE;
         });
 
-        // Zona derecha: ícono play/pausa (click → alterna)
-        this._playPauseLabel = new St.Label({
-            text: '',
-            y_align: Clutter.ActorAlign.CENTER,
-            reactive: true,
-            style: this._playPauseStyle(),
-        });
-        this._playPauseLabel.connect('button-press-event', (_actor, event) => {
-            if (event.get_button() === 1) {
-                this._callMpris('PlayPause');
-                return Clutter.EVENT_STOP;
-            }
-            return Clutter.EVENT_PROPAGATE;
-        });
-
         box.add_child(this._songLabel);
-        box.add_child(this._playPauseLabel);
         this._indicator.add_child(box);
 
         // Hover → mostrar/ocultar panel con detalle de la canción.
         // Se engancha en el indicador y en sus hijos porque Clutter
         // dispara leave-event/enter-event al cruzar entre actores hijos.
-        for (const actor of [this._indicator, this._songLabel, this._playPauseLabel]) {
+        for (const actor of [this._indicator, this._songLabel]) {
             actor.connect('enter-event', () => this._onIndicatorEnter());
             actor.connect('leave-event', () => this._onIndicatorLeave());
         }
@@ -154,7 +137,6 @@ export default class SpotifyNowPlayingExtension {
             this._indicator = null;
         }
         this._songLabel           = null;
-        this._playPauseLabel      = null;
         this._fontSizeItem        = null;
         this._popupCoverIcon      = null;
         this._popupTitleLabel     = null;
@@ -207,16 +189,11 @@ export default class SpotifyNowPlayingExtension {
 
     _applyFontSize() {
         this._songLabel?.set_style(this._labelStyle());
-        this._playPauseLabel?.set_style(this._playPauseStyle());
         this._fontSizeItem?.label.set_text(this._fontSizeLabel());
     }
 
     _labelStyle() {
         return `padding: 0 6px 0 6px; font-size: ${this._fontSize}px;`;
-    }
-
-    _playPauseStyle() {
-        return `padding: 0 6px 0 2px; font-size: ${this._fontSize}px;`;
     }
 
     // ─── Persistencia ──────────────────────────────────────────────────────────
@@ -303,7 +280,6 @@ export default class SpotifyNowPlayingExtension {
     _onSpotifyVanished(_connection, _name) {
         this._destroyProxy();
         this._songLabel?.set_text(IDLE_TEXT);
-        this._playPauseLabel?.set_text('');
         this._hideHoverPopup();
         this._lastArtUrl = null;
         this._trackLengthUs = 0;
@@ -346,15 +322,13 @@ export default class SpotifyNowPlayingExtension {
     }
 
     _updateDisplay() {
-        if (!this._proxy || !this._songLabel || !this._playPauseLabel) return;
+        if (!this._proxy || !this._songLabel) return;
 
         try {
-            const statusVariant   = this._proxy.get_cached_property('PlaybackStatus');
             const metadataVariant = this._proxy.get_cached_property('Metadata');
 
             if (!metadataVariant) {
                 this._songLabel.set_text(IDLE_TEXT);
-                this._playPauseLabel.set_text('');
                 this._lastArtUrl = null;
                 this._trackLengthUs = 0;
                 this._popupCoverIcon?.set_gicon(null);
@@ -367,10 +341,6 @@ export default class SpotifyNowPlayingExtension {
             const artist    = Array.isArray(artistRaw)
                 ? artistRaw.join(', ')
                 : (artistRaw ?? '–');
-
-            const status        = statusVariant ? statusVariant.unpack() : 'Stopped';
-            const playPauseIcon = status === 'Playing' ? '⏸' : '▶';
-            this._playPauseLabel.set_text(playPauseIcon);
 
             let text = `♫  ${artist} – ${title}`;
             if (text.length > MAX_TEXT_LENGTH)
@@ -393,7 +363,6 @@ export default class SpotifyNowPlayingExtension {
         } catch (e) {
             console.error(`[spotify-now-playing] Display update error: ${e.message}`);
             this._songLabel?.set_text(IDLE_TEXT);
-            this._playPauseLabel?.set_text('');
         }
     }
 
@@ -409,10 +378,19 @@ export default class SpotifyNowPlayingExtension {
                    'border: 1px solid rgba(255,255,255,0.1);',
         });
 
+        // Click en la carátula → alternar play/pausa
         this._popupCoverIcon = new St.Icon({
             icon_size: POPUP_ART_SIZE,
             x_align: Clutter.ActorAlign.CENTER,
+            reactive: true,
             style: `width: ${POPUP_ART_SIZE}px; height: ${POPUP_ART_SIZE}px; border-radius: 6px;`,
+        });
+        this._popupCoverIcon.connect('button-press-event', (_actor, event) => {
+            if (event.get_button() === 1) {
+                this._callMpris('PlayPause');
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
         });
         this._popup.add_child(this._popupCoverIcon);
 
