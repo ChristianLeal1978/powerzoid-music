@@ -35,8 +35,8 @@ const PROGRESS_BAR_WIDTH   = 200;
 const PROGRESS_UPDATE_MS   = 1000;
 const HOVER_HIDE_DELAY_MS  = 150;
 
-const ART_CACHE_PATH = GLib.build_filenamev([
-    GLib.get_user_cache_dir(), 'spotify-now-playing-gnome', 'cover.jpg'
+const ART_CACHE_DIR = GLib.build_filenamev([
+    GLib.get_user_cache_dir(), 'spotify-now-playing-gnome'
 ]);
 
 export default class SpotifyNowPlayingExtension {
