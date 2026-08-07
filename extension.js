@@ -6,6 +6,8 @@
  * Click izquierdo en texto   → siguiente pista (Next)
  * Click derecho en texto     → menú: tamaño de letra
  * Click en el ícono          → alternar play/pausa (PlayPause)
+ * Hover sobre la extensión   → panel con carátula, artista, título,
+ *                               duración y progreso de la canción
  */
 
 import GLib from 'gi://GLib';
@@ -26,6 +28,17 @@ const DEFAULT_FONT_SIZE   = 13;
 const MIN_FONT_SIZE       = 8;
 const MAX_FONT_SIZE       = 20;
 
+const POPUP_WIDTH          = 260;
+const POPUP_ART_SIZE       = 64;
+const POPUP_TEXT_MAX_LEN   = 40;
+const PROGRESS_BAR_WIDTH   = 180;
+const PROGRESS_UPDATE_MS   = 1000;
+const HOVER_HIDE_DELAY_MS  = 150;
+
+const ART_CACHE_PATH = GLib.build_filenamev([
+    GLib.get_user_cache_dir(), 'spotify-now-playing-gnome', 'cover.jpg'
+]);
+
 export default class SpotifyNowPlayingExtension {
     constructor(metadata) {
         this._metadata            = metadata;
@@ -37,6 +50,20 @@ export default class SpotifyNowPlayingExtension {
         this._propertiesChangedId = null;
         this._fontSize            = DEFAULT_FONT_SIZE;
         this._fontSizeItem        = null;
+
+        // Popup de hover
+        this._popup               = null;
+        this._popupCoverIcon      = null;
+        this._popupTitleLabel     = null;
+        this._popupArtistLabel    = null;
+        this._popupDurationLabel  = null;
+        this._popupProgressTrack  = null;
+        this._popupProgressFill   = null;
+        this._hidePopupTimeoutId  = null;
+        this._progressTimeoutId   = null;
+        this._lastArtUrl          = null;
+        this._trackLengthUs       = 0;
+        this._artCancellable      = null;
     }
 
     enable() {
@@ -87,6 +114,15 @@ export default class SpotifyNowPlayingExtension {
         box.add_child(this._playPauseLabel);
         this._indicator.add_child(box);
 
+        // Hover → mostrar/ocultar panel con detalle de la canción.
+        // Se engancha en el indicador y en sus hijos porque Clutter
+        // dispara leave-event/enter-event al cruzar entre actores hijos.
+        for (const actor of [this._indicator, this._songLabel, this._playPauseLabel]) {
+            actor.connect('enter-event', () => this._onIndicatorEnter());
+            actor.connect('leave-event', () => this._onIndicatorLeave());
+        }
+
+        this._buildHoverPopup();
         this._buildMenu();
 
         Main.panel.addToStatusArea('spotify-now-playing', this._indicator, 1, 'left');
@@ -97,13 +133,35 @@ export default class SpotifyNowPlayingExtension {
     disable() {
         this._stopWatching();
 
+        if (this._progressTimeoutId !== null) {
+            GLib.source_remove(this._progressTimeoutId);
+            this._progressTimeoutId = null;
+        }
+        if (this._hidePopupTimeoutId !== null) {
+            GLib.source_remove(this._hidePopupTimeoutId);
+            this._hidePopupTimeoutId = null;
+        }
+        this._artCancellable?.cancel();
+        this._artCancellable = null;
+
+        if (this._popup) {
+            this._popup.destroy();
+            this._popup = null;
+        }
+
         if (this._indicator) {
             this._indicator.destroy();
             this._indicator = null;
         }
-        this._songLabel      = null;
-        this._playPauseLabel = null;
-        this._fontSizeItem   = null;
+        this._songLabel           = null;
+        this._playPauseLabel      = null;
+        this._fontSizeItem        = null;
+        this._popupCoverIcon      = null;
+        this._popupTitleLabel     = null;
+        this._popupArtistLabel    = null;
+        this._popupDurationLabel  = null;
+        this._popupProgressTrack  = null;
+        this._popupProgressFill   = null;
     }
 
     // ─── Menú contextual ───────────────────────────────────────────────────────
@@ -246,6 +304,10 @@ export default class SpotifyNowPlayingExtension {
         this._destroyProxy();
         this._songLabel?.set_text(IDLE_TEXT);
         this._playPauseLabel?.set_text('');
+        this._hideHoverPopup();
+        this._lastArtUrl = null;
+        this._trackLengthUs = 0;
+        this._popupCoverIcon?.set_gicon(null);
     }
 
     _destroyProxy() {
@@ -293,6 +355,9 @@ export default class SpotifyNowPlayingExtension {
             if (!metadataVariant) {
                 this._songLabel.set_text(IDLE_TEXT);
                 this._playPauseLabel.set_text('');
+                this._lastArtUrl = null;
+                this._trackLengthUs = 0;
+                this._popupCoverIcon?.set_gicon(null);
                 return;
             }
 
@@ -312,10 +377,246 @@ export default class SpotifyNowPlayingExtension {
                 text = text.slice(0, MAX_TEXT_LENGTH - 1) + '…';
             this._songLabel.set_text(text);
 
+            // Datos para el popup de hover
+            this._trackLengthUs = typeof metadata['mpris:length'] === 'number'
+                ? metadata['mpris:length'] : 0;
+            this._popupTitleLabel?.set_text(this._truncate(title, POPUP_TEXT_MAX_LEN));
+            this._popupArtistLabel?.set_text(this._truncate(artist, POPUP_TEXT_MAX_LEN));
+            this._updateProgress(0);
+
+            const artUrl = metadata['mpris:artUrl'] ?? null;
+            if (artUrl !== this._lastArtUrl) {
+                this._lastArtUrl = artUrl;
+                this._loadCoverArt(artUrl);
+            }
+
         } catch (e) {
             console.error(`[spotify-now-playing] Display update error: ${e.message}`);
             this._songLabel?.set_text(IDLE_TEXT);
             this._playPauseLabel?.set_text('');
+        }
+    }
+
+    // ─── Popup de hover ────────────────────────────────────────────────────────
+
+    _buildHoverPopup() {
+        this._popup = new St.BoxLayout({
+            vertical: true,
+            reactive: true,
+            visible: false,
+            style: `width: ${POPUP_WIDTH}px; padding: 10px; spacing: 8px; ` +
+                   'background-color: rgba(24,24,24,0.97); border-radius: 8px; ' +
+                   'border: 1px solid rgba(255,255,255,0.1);',
+        });
+
+        const topBox = new St.BoxLayout({ style: 'spacing: 10px;' });
+
+        this._popupCoverIcon = new St.Icon({
+            icon_size: POPUP_ART_SIZE,
+            style: `width: ${POPUP_ART_SIZE}px; height: ${POPUP_ART_SIZE}px; border-radius: 4px;`,
+        });
+
+        const infoBox = new St.BoxLayout({
+            vertical: true,
+            y_align: Clutter.ActorAlign.CENTER,
+            style: 'spacing: 4px;',
+        });
+
+        this._popupTitleLabel = new St.Label({
+            text: '', style: 'font-weight: bold; font-size: 13px;',
+        });
+        this._popupArtistLabel = new St.Label({
+            text: '', style: 'color: #bbb; font-size: 11px;',
+        });
+
+        infoBox.add_child(this._popupTitleLabel);
+        infoBox.add_child(this._popupArtistLabel);
+
+        topBox.add_child(this._popupCoverIcon);
+        topBox.add_child(infoBox);
+        this._popup.add_child(topBox);
+
+        this._popupProgressTrack = new St.Widget({
+            layout_manager: new Clutter.BinLayout(),
+            style: `width: ${PROGRESS_BAR_WIDTH}px; height: 4px; border-radius: 2px; ` +
+                   'background-color: rgba(255,255,255,0.2);',
+        });
+        this._popupProgressFill = new St.Widget({
+            x_align: Clutter.ActorAlign.START,
+            y_align: Clutter.ActorAlign.FILL,
+            style: 'width: 0px; border-radius: 2px; background-color: #1DB954;',
+        });
+        this._popupProgressTrack.add_child(this._popupProgressFill);
+        this._popup.add_child(this._popupProgressTrack);
+
+        this._popupDurationLabel = new St.Label({
+            text: '0:00 / 0:00', style: 'font-size: 10px; color: #bbb;',
+        });
+        this._popup.add_child(this._popupDurationLabel);
+
+        Main.layoutManager.uiGroup.add_child(this._popup);
+
+        this._popup.connect('enter-event', () => this._cancelHidePopup());
+        this._popup.connect('leave-event', () => this._scheduleHidePopup());
+    }
+
+    _onIndicatorEnter() {
+        this._cancelHidePopup();
+        if (!this._proxy) return;
+        this._showHoverPopup();
+    }
+
+    _onIndicatorLeave() {
+        this._scheduleHidePopup();
+    }
+
+    _showHoverPopup() {
+        if (!this._popup || !this._proxy) return;
+        this._positionPopup();
+        this._popup.show();
+        this._refreshPosition();
+        if (this._progressTimeoutId === null) {
+            this._progressTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PROGRESS_UPDATE_MS, () => {
+                this._refreshPosition();
+                return GLib.SOURCE_CONTINUE;
+            });
+        }
+    }
+
+    _hideHoverPopup() {
+        this._popup?.hide();
+        if (this._progressTimeoutId !== null) {
+            GLib.source_remove(this._progressTimeoutId);
+            this._progressTimeoutId = null;
+        }
+    }
+
+    _scheduleHidePopup() {
+        this._cancelHidePopup();
+        this._hidePopupTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, HOVER_HIDE_DELAY_MS, () => {
+            this._hidePopupTimeoutId = null;
+            this._hideHoverPopup();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _cancelHidePopup() {
+        if (this._hidePopupTimeoutId !== null) {
+            GLib.source_remove(this._hidePopupTimeoutId);
+            this._hidePopupTimeoutId = null;
+        }
+    }
+
+    _positionPopup() {
+        if (!this._popup || !this._indicator) return;
+
+        const [x, y] = this._indicator.get_transformed_position();
+        const height = this._indicator.get_height();
+        let popupX = Math.round(x);
+
+        const monitor = Main.layoutManager.findMonitorForActor(this._indicator)
+            ?? Main.layoutManager.primaryMonitor;
+        if (monitor) {
+            const maxX = monitor.x + monitor.width - POPUP_WIDTH - 8;
+            popupX = Math.min(popupX, maxX);
+            popupX = Math.max(popupX, monitor.x + 8);
+        }
+
+        this._popup.set_position(popupX, Math.round(y + height));
+    }
+
+    // Consulta la posición de reproducción bajo demanda: MPRIS excluye
+    // 'Position' de las señales PropertiesChanged por cambiar continuamente.
+    _refreshPosition() {
+        if (!this._proxy) return;
+        this._proxy.get_connection().call(
+            SPOTIFY_BUS_NAME,
+            MPRIS_OBJECT_PATH,
+            'org.freedesktop.DBus.Properties',
+            'Get',
+            new GLib.Variant('(ss)', [MPRIS_PLAYER_IFACE, 'Position']),
+            GLib.VariantType.new('(v)'),
+            Gio.DBusCallFlags.NONE,
+            -1,
+            null,
+            (connection, result) => {
+                try {
+                    const reply = connection.call_finish(result);
+                    const [positionUs] = reply.recursiveUnpack();
+                    this._updateProgress(positionUs);
+                } catch (e) {
+                    console.error(`[spotify-now-playing] Position query failed: ${e.message}`);
+                }
+            }
+        );
+    }
+
+    _updateProgress(positionUs) {
+        if (!this._popupDurationLabel || !this._popupProgressFill) return;
+
+        this._popupDurationLabel.set_text(
+            `${this._formatTime(positionUs)} / ${this._formatTime(this._trackLengthUs)}`
+        );
+
+        const ratio = this._trackLengthUs > 0
+            ? Math.min(1, Math.max(0, positionUs / this._trackLengthUs)) : 0;
+        const fillWidth = Math.round(ratio * PROGRESS_BAR_WIDTH);
+        this._popupProgressFill.set_style(
+            `width: ${fillWidth}px; border-radius: 2px; background-color: #1DB954;`
+        );
+    }
+
+    _formatTime(microseconds) {
+        const totalSeconds = Math.max(0, Math.floor(microseconds / 1000000));
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        return `${minutes}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    _truncate(text, maxLength) {
+        return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+    }
+
+    _loadCoverArt(artUrl) {
+        this._artCancellable?.cancel();
+        this._popupCoverIcon?.set_gicon(null);
+
+        if (!artUrl) return;
+
+        const cancellable = new Gio.Cancellable();
+        this._artCancellable = cancellable;
+
+        Gio.File.new_for_uri(artUrl).load_contents_async(cancellable, (file, result) => {
+            try {
+                const [, contents] = file.load_contents_finish(result);
+                this._saveCoverArt(contents, cancellable);
+            } catch (e) {
+                if (!cancellable.is_cancelled())
+                    console.error(`[spotify-now-playing] Cover art fetch failed: ${e.message}`);
+            }
+        });
+    }
+
+    _saveCoverArt(contents, cancellable) {
+        try {
+            const dir = GLib.path_get_dirname(ART_CACHE_PATH);
+            GLib.mkdir_with_parents(dir, 0o755);
+            const cacheFile = Gio.File.new_for_path(ART_CACHE_PATH);
+            cacheFile.replace_contents_async(
+                contents, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, cancellable,
+                (file, result) => {
+                    try {
+                        file.replace_contents_finish(result);
+                        if (!cancellable.is_cancelled())
+                            this._popupCoverIcon?.set_gicon(Gio.FileIcon.new(cacheFile));
+                    } catch (e) {
+                        if (!cancellable.is_cancelled())
+                            console.error(`[spotify-now-playing] Cover art save failed: ${e.message}`);
+                    }
+                }
+            );
+        } catch (e) {
+            console.error(`[spotify-now-playing] Cover art save failed: ${e.message}`);
         }
     }
 }
