@@ -1,22 +1,28 @@
-# Spotify Now Playing — GNOME Shell Extension
+# PowerZoid Music — GNOME Shell Extension
 
-Extensión para GNOME Shell que muestra en la barra superior el artista y título de la canción que se está reproduciendo en Spotify, con controles de reproducción integrados.
+Extensión para GNOME Shell que muestra en la barra superior lo que se está reproduciendo, con controles integrados. Soporta tres fuentes, elegibles con click derecho:
+
+- **Spotify** — observado vía MPRIS2/D-Bus, igual que siempre.
+- **Rainwave** — streaming directo de la radio comunitaria de música de videojuegos.
+- **RadioTunes** — streaming directo con tu cuenta premium (mediante tu URL de stream con `listen_key`).
 
 ```
-♫  GameChops – Aryll's Theme   ⏸
+♫  GameChops – Aryll's Theme
+📻  Rainwave: Game
 ```
 
 ## Características
 
-- **Artista y título** de la canción actual en tiempo real
-- **Ícono de estado** que refleja si Spotify está reproduciendo (`▶`) o pausado (`⏸`)
-- **Click en el texto** → salta a la siguiente pista
-- **Click en el ícono** → alterna entre play y pausa
-- **Actualización instantánea** vía señales D-Bus (sin polling)
-- **Sin dependencias externas** — usa el protocolo MPRIS2 que Spotify implementa de forma nativa en Linux
-- Aparece solo cuando Spotify está abierto; desaparece automáticamente al cerrarlo
+- **Selector de fuente** por click derecho: Spotify, Rainwave (5 canales) o RadioTunes (tu URL de stream)
+- **Artista y título** de la canción actual en tiempo real (Spotify vía MPRIS; Rainwave/RadioTunes vía metadata ICY del stream)
+- **Click en el texto** → siguiente pista (Spotify) o play/stop (radio)
+- **Click en la carátula/ícono** → alterna reproducción
+- **Actualización instantánea** vía señales D-Bus en Spotify (sin polling); sondeo liviano cada 5 s en modo radio
+- Aparece solo cuando hay algo que mostrar; en Spotify desaparece automáticamente al cerrarlo
 
 ## Cómo funciona
+
+### Spotify
 
 Spotify en Linux implementa el estándar **MPRIS2** (`org.mpris.MediaPlayer2`) sobre el bus de sesión D-Bus. La extensión:
 
@@ -28,11 +34,28 @@ Spotify en Linux implementa el estándar **MPRIS2** (`org.mpris.MediaPlayer2`) s
 
 No se necesita ningún servidor local, userscript ni servicio systemd.
 
+### Rainwave y RadioTunes
+
+GNOME Shell no tiene un motor de audio propio, así que para estas dos fuentes la extensión lanza **[mpv](https://mpv.io/)** como subproceso y lo controla mediante su socket IPC (play/stop y lectura de la metadata ICY del stream para mostrar artista/título). Es necesario tener mpv instalado:
+
+```bash
+sudo dnf install mpv
+```
+
+- **Rainwave** usa las URLs públicas de sintonización de rainwave.cc (`https://rainwave.cc/tune_in/<id>.mp3`), sin necesidad de cuenta ni API key.
+- **RadioTunes** no tiene una API pública documentada. Su cuenta premium sí ofrece, de forma oficial, una URL de stream con un parámetro `listen_key` pensada para reproductores externos (VLC, Winamp, Sonos, etc.) — es lo mismo que usa la extensión, sin necesidad de guardar tu usuario/contraseña. Para obtenerla:
+  1. Entra a tu cuenta en [radiotunes.com](https://www.radiotunes.com) con tu suscripción premium activa.
+  2. Busca la opción para reproducir en un reproductor externo / dispositivo (Winamp, VLC, Sonos, Squeezebox…) — suele estar en la configuración de la cuenta o en el propio reproductor de la web.
+  3. Copia la URL de stream que te entrega (incluye tu `listen_key`).
+  4. Pégala en el menú de la extensión: click derecho → **Fuente** → **RadioTunes** → pega la URL → **▶ Reproducir**.
+
+  Si RadioTunes cambia este mecanismo en el futuro, solo hace falta repetir estos pasos y pegar la URL nueva — la extensión no depende de un formato fijo, reproduce cualquier URL de stream que le des.
+
 ## Requisitos
 
 - Fedora 44 (o cualquier distro con GNOME Shell 45–50)
-- Spotify instalado (versión de escritorio para Linux)
-- Sin dependencias adicionales
+- Spotify instalado (versión de escritorio para Linux) — solo si usas esa fuente
+- `mpv` instalado — solo si usas Rainwave o RadioTunes
 
 ## Instalación
 
@@ -76,6 +99,8 @@ cp -r spotify-now-playing@cleal.cl \
 gnome-session-quit --logout
 ```
 
+> El identificador interno (`spotify-now-playing@cleal.cl`) no cambió al renombrar la extensión a "PowerZoid Music" — es solo el nombre visible en el panel y en Extensiones. Una actualización no requiere desinstalar ni volver a habilitarla manualmente (más allá de cerrar sesión para recargar el código).
+
 ## Desinstalar
 
 ```bash
@@ -87,10 +112,11 @@ rm -rf ~/.local/share/gnome-shell/extensions/spotify-now-playing@cleal.cl
 
 | Acción | Resultado |
 |--------|-----------|
-| Click en el texto de la canción | Salta a la siguiente pista |
-| Click en `▶` / `⏸` | Alterna entre reproducir y pausar |
+| Click derecho | Abre el menú: elegir fuente (Spotify/Rainwave/RadioTunes), tamaño de letra |
+| Click en el texto de la barra | Spotify: siguiente pista · Rainwave/RadioTunes: play/stop |
+| Click en la carátula/ícono del popup | Alterna reproducción (PlayPause en Spotify, play/stop en radio) |
 
-El texto se trunca automáticamente a 50 caracteres si el título es muy largo.
+El texto se trunca automáticamente a 50 caracteres si es muy largo.
 
 ## Compatibilidad
 
@@ -105,7 +131,8 @@ El texto se trunca automáticamente a 50 caracteres si el título es muy largo.
 ```
 spotify-now-playing@cleal.cl/
 ├── metadata.json   # UUID, nombre, versiones de GNOME Shell compatibles
-└── extension.js    # Lógica completa: proxy D-Bus, UI, controles
+├── extension.js    # Lógica completa: proxy D-Bus, UI, selector de fuente, controles
+└── mpvPlayer.js     # Subproceso mpv + control IPC para Rainwave/RadioTunes
 ```
 
 ## Licencia

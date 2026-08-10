@@ -1,8 +1,8 @@
 {
     "uuid": "spotify-now-playing@cleal.cl",
-    "name": "Spotify Now Playing",
-    "description": "Shows the current Spotify track and artist in the GNOME top bar via MPRIS2/D-Bus. No external dependencies needed.",
-    "version": 1,
+    "name": "PowerZoid Music",
+    "description": "Shows the current track in the GNOME top bar. Spotify via MPRIS2/D-Bus, or stream Rainwave / RadioTunes directly (requires mpv).",
+    "version": 2,
     "shell-version": ["45", "46", "47", "48", "49", "50"],
     "url": ""
 }

@@ -1,13 +1,22 @@
 /**
- * Spotify Now Playing — GNOME Shell Extension
+ * PowerZoid Music — GNOME Shell Extension
  *
- * Layout de la barra:  [ ♫  Artista – Título ]
+ * Layout de la barra:  [ ♫/📻  Texto de la fuente activa ]
  *
- * Click izquierdo en texto   → siguiente pista (Next)
- * Click derecho en texto     → menú: tamaño de letra
- * Hover sobre la extensión   → panel con carátula, artista, título,
- *                               duración y progreso de la canción
- * Click en la carátula       → alternar play/pausa (PlayPause)
+ * Click izquierdo en texto   → Spotify: siguiente pista · Radio: play/stop
+ * Click derecho en texto     → menú: elegir fuente (Spotify/Rainwave/
+ *                               RadioTunes), tamaño de letra
+ * Hover sobre la extensión   → panel con carátula/ícono, título, artista
+ *                               y progreso (Spotify) o estado en vivo (radio)
+ * Click en la carátula       → alternar play/pausa o play/stop según fuente
+ *
+ * Fuentes soportadas:
+ *  - Spotify: se observa vía MPRIS2/D-Bus (como antes), sin reproducir audio
+ *    propio — Spotify ya lo hace.
+ *  - Rainwave / RadioTunes: no hay un reproductor de escritorio con MPRIS,
+ *    así que la extensión lanza `mpv` como subproceso y lo controla por su
+ *    socket IPC (play/stop y lectura de metadata ICY). Requiere mpv
+ *    instalado (`sudo dnf install mpv`).
  */
 
 import GLib from 'gi://GLib';
@@ -17,10 +26,21 @@ import Clutter from 'gi://Clutter';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import { MpvPlayer } from './mpvPlayer.js';
 
 const SPOTIFY_BUS_NAME    = 'org.mpris.MediaPlayer2.spotify';
 const MPRIS_OBJECT_PATH   = '/org/mpris/MediaPlayer2';
 const MPRIS_PLAYER_IFACE  = 'org.mpris.MediaPlayer2.Player';
+
+const SOURCE = { SPOTIFY: 'spotify', RAINWAVE: 'rainwave', RADIOTUNES: 'radiotunes' };
+
+const RAINWAVE_STATIONS = [
+    { id: 1, name: 'Game' },
+    { id: 2, name: 'OC ReMix' },
+    { id: 3, name: 'Covers' },
+    { id: 4, name: 'Chiptune' },
+    { id: 5, name: 'All' },
+];
 
 const MAX_TEXT_LENGTH     = 50;
 const IDLE_TEXT           = '♫';
@@ -33,13 +53,14 @@ const POPUP_ART_SIZE       = 192;
 const POPUP_TEXT_MAX_LEN   = 40;
 const PROGRESS_BAR_WIDTH   = 200;
 const PROGRESS_UPDATE_MS   = 1000;
+const RADIO_POLL_MS        = 5000;
 const HOVER_HIDE_DELAY_MS  = 150;
 
 const ART_CACHE_DIR = GLib.build_filenamev([
     GLib.get_user_cache_dir(), 'spotify-now-playing-gnome'
 ]);
 
-export default class SpotifyNowPlayingExtension {
+export default class PowerZoidMusicExtension {
     constructor(metadata) {
         this._metadata            = metadata;
         this._indicator           = null;
@@ -49,6 +70,22 @@ export default class SpotifyNowPlayingExtension {
         this._propertiesChangedId = null;
         this._fontSize            = DEFAULT_FONT_SIZE;
         this._fontSizeItem        = null;
+
+        // Fuente activa
+        this._source              = SOURCE.SPOTIFY;
+        this._rainwaveStationId   = RAINWAVE_STATIONS[0].id;
+        this._radiotunesUrl       = '';
+        this._mpvPlayer           = null;
+        this._radioPollTimeoutId  = null;
+        this._radioMediaTitle     = null;
+
+        // Ítems del menú de selección de fuente
+        this._sourceSubMenu         = null;
+        this._spotifyMenuItem       = null;
+        this._rainwaveSubMenuItem   = null;
+        this._rainwaveStationItems  = new Map();
+        this._radiotunesSubMenuItem = null;
+        this._radiotunesEntry       = null;
 
         // Popup de hover
         this._popup               = null;
@@ -69,12 +106,13 @@ export default class SpotifyNowPlayingExtension {
         this._loadSettings();
 
         // false → PanelMenu crea el menú popup automáticamente
-        this._indicator = new PanelMenu.Button(0.0, 'Spotify Now Playing', false);
+        this._indicator = new PanelMenu.Button(0.0, 'PowerZoid Music', false);
 
         const box = new St.BoxLayout({ style: 'spacing: 2px;' });
 
-        // Zona izquierda: nombre de la canción
-        // Click izquierdo → siguiente pista | Click derecho → menú
+        // Zona izquierda: nombre de la canción / emisora
+        // Click izquierdo → siguiente pista (Spotify) o play/stop (radio)
+        // Click derecho   → menú
         this._songLabel = new St.Label({
             text: IDLE_TEXT,
             y_align: Clutter.ActorAlign.CENTER,
@@ -84,7 +122,10 @@ export default class SpotifyNowPlayingExtension {
         this._songLabel.connect('button-press-event', (_actor, event) => {
             const button = event.get_button();
             if (button === 1) {
-                this._callMpris('Next');
+                if (this._source === SOURCE.SPOTIFY)
+                    this._callMpris('Next');
+                else
+                    this._toggleRadioPlayback();
                 return Clutter.EVENT_STOP;
             }
             if (button === 3) {
@@ -105,16 +146,24 @@ export default class SpotifyNowPlayingExtension {
             actor.connect('leave-event', () => this._onIndicatorLeave());
         }
 
+        this._mpvPlayer = new MpvPlayer();
+        this._mpvPlayer.onStateChanged = (playing) => this._onRadioStateChanged(playing);
+        this._mpvPlayer.onError = (message) => this._onRadioError(message);
+
         this._buildHoverPopup();
         this._buildMenu();
 
-        Main.panel.addToStatusArea('spotify-now-playing', this._indicator, 1, 'left');
+        Main.panel.addToStatusArea('powerzoid-music', this._indicator, 1, 'left');
 
-        this._startWatching();
+        this._applyInitialSource();
     }
 
     disable() {
         this._stopWatching();
+
+        this._mpvPlayer?.destroy();
+        this._mpvPlayer = null;
+        this._stopRadioPoll();
 
         if (this._progressTimeoutId !== null) {
             GLib.source_remove(this._progressTimeoutId);
@@ -136,19 +185,214 @@ export default class SpotifyNowPlayingExtension {
             this._indicator.destroy();
             this._indicator = null;
         }
-        this._songLabel           = null;
-        this._fontSizeItem        = null;
-        this._popupCoverIcon      = null;
-        this._popupTitleLabel     = null;
-        this._popupArtistLabel    = null;
-        this._popupDurationLabel  = null;
-        this._popupProgressTrack  = null;
-        this._popupProgressFill   = null;
+        this._songLabel             = null;
+        this._fontSizeItem          = null;
+        this._popupCoverIcon        = null;
+        this._popupTitleLabel       = null;
+        this._popupArtistLabel      = null;
+        this._popupDurationLabel    = null;
+        this._popupProgressTrack    = null;
+        this._popupProgressFill     = null;
+        this._sourceSubMenu         = null;
+        this._spotifyMenuItem       = null;
+        this._rainwaveSubMenuItem   = null;
+        this._rainwaveStationItems.clear();
+        this._radiotunesSubMenuItem = null;
+        this._radiotunesEntry       = null;
+    }
+
+    // ─── Selección de fuente ───────────────────────────────────────────────────
+
+    _applyInitialSource() {
+        this._refreshSourceOrnaments();
+        if (this._source === SOURCE.SPOTIFY)
+            this._startWatching();
+        else
+            this._songLabel.set_text(this._radioIdleLabel());
+    }
+
+    // Libera lo que la fuente actual estuviera usando (proxy D-Bus o mpv)
+    // antes de pasar a otra fuente.
+    _leaveCurrentSource() {
+        if (this._source === SOURCE.SPOTIFY) {
+            this._stopWatching();
+        } else {
+            this._stopRadioPlayback();
+        }
+    }
+
+    _switchToSpotify() {
+        if (this._source === SOURCE.SPOTIFY) return;
+        this._leaveCurrentSource();
+        this._source = SOURCE.SPOTIFY;
+        this._saveSettings();
+        this._refreshSourceOrnaments();
+        this._songLabel.set_text(IDLE_TEXT);
+        this._startWatching();
+    }
+
+    _selectRainwaveStation(id) {
+        this._leaveCurrentSource();
+        this._rainwaveStationId = id;
+        this._source = SOURCE.RAINWAVE;
+        this._saveSettings();
+        this._refreshSourceOrnaments();
+        this._startRadioPlayback(`https://rainwave.cc/tune_in/${id}.mp3`);
+    }
+
+    _selectRadioTunes() {
+        const url = this._radiotunesEntry?.get_text().trim();
+        if (!url) return;
+        this._leaveCurrentSource();
+        this._radiotunesUrl = url;
+        this._source = SOURCE.RADIOTUNES;
+        this._saveSettings();
+        this._refreshSourceOrnaments();
+        this._startRadioPlayback(url);
+    }
+
+    _sourceStatusText() {
+        if (this._source === SOURCE.RAINWAVE) {
+            const station = RAINWAVE_STATIONS.find(s => s.id === this._rainwaveStationId);
+            return `Fuente: Rainwave — ${station?.name ?? '?'}`;
+        }
+        if (this._source === SOURCE.RADIOTUNES)
+            return 'Fuente: RadioTunes';
+        return 'Fuente: Spotify';
+    }
+
+    _refreshSourceOrnaments() {
+        this._sourceSubMenu?.label.set_text(this._sourceStatusText());
+
+        this._spotifyMenuItem?.setOrnament(
+            this._source === SOURCE.SPOTIFY ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE
+        );
+        this._rainwaveSubMenuItem?.setOrnament(
+            this._source === SOURCE.RAINWAVE ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE
+        );
+        for (const [id, item] of this._rainwaveStationItems) {
+            item.setOrnament(
+                this._source === SOURCE.RAINWAVE && id === this._rainwaveStationId
+                    ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE
+            );
+        }
+        this._radiotunesSubMenuItem?.setOrnament(
+            this._source === SOURCE.RADIOTUNES ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE
+        );
+    }
+
+    // ─── Reproducción de radio (Rainwave / RadioTunes vía mpv) ────────────────
+
+    _startRadioPlayback(url) {
+        this._radioMediaTitle = null;
+        this._songLabel.set_text(this._radioIdleLabel());
+        this._setPopupGenericIcon();
+        this._mpvPlayer.play(url);
+    }
+
+    _stopRadioPlayback() {
+        this._mpvPlayer?.stop();
+        this._stopRadioPoll();
+        this._radioMediaTitle = null;
+    }
+
+    _toggleRadioPlayback() {
+        if (this._source === SOURCE.SPOTIFY) return;
+        if (this._mpvPlayer?.isPlaying) {
+            this._stopRadioPlayback();
+            this._songLabel.set_text(this._radioIdleLabel());
+            this._updateRadioPopupContent();
+            return;
+        }
+        const url = this._source === SOURCE.RAINWAVE
+            ? `https://rainwave.cc/tune_in/${this._rainwaveStationId}.mp3`
+            : this._radiotunesUrl;
+        if (!url) return;
+        this._startRadioPlayback(url);
+    }
+
+    _onRadioStateChanged(playing) {
+        if (playing) {
+            this._startRadioPoll();
+            return;
+        }
+        this._stopRadioPoll();
+        this._radioMediaTitle = null;
+        if (this._source !== SOURCE.SPOTIFY) {
+            this._songLabel?.set_text(this._radioIdleLabel());
+            this._updateRadioPopupContent();
+        }
+    }
+
+    _onRadioError(message) {
+        console.error(`[powerzoid-music] ${message}`);
+        this._songLabel?.set_text('⚠ mpv');
+    }
+
+    _startRadioPoll() {
+        if (this._radioPollTimeoutId !== null) return;
+        const poll = () => {
+            this._mpvPlayer?.queryMediaTitle((title) => {
+                this._radioMediaTitle = title;
+                this._applyRadioMediaTitle(title);
+            });
+            return GLib.SOURCE_CONTINUE;
+        };
+        poll();
+        this._radioPollTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, RADIO_POLL_MS, poll);
+    }
+
+    _stopRadioPoll() {
+        if (this._radioPollTimeoutId !== null) {
+            GLib.source_remove(this._radioPollTimeoutId);
+            this._radioPollTimeoutId = null;
+        }
+    }
+
+    _applyRadioMediaTitle(title) {
+        if (this._source === SOURCE.SPOTIFY) return;
+        let text = `📻  ${title}`;
+        if (text.length > MAX_TEXT_LENGTH)
+            text = text.slice(0, MAX_TEXT_LENGTH - 1) + '…';
+        this._songLabel?.set_text(text);
+        this._updateRadioPopupContent();
+    }
+
+    _radioIdleLabel() {
+        if (this._source === SOURCE.RAINWAVE) {
+            const station = RAINWAVE_STATIONS.find(s => s.id === this._rainwaveStationId);
+            return `📻  Rainwave: ${station?.name ?? '?'}`;
+        }
+        if (this._source === SOURCE.RADIOTUNES)
+            return '📻  RadioTunes';
+        return IDLE_TEXT;
     }
 
     // ─── Menú contextual ───────────────────────────────────────────────────────
 
     _buildMenu() {
+        this._sourceSubMenu = new PopupMenu.PopupSubMenuMenuItem(this._sourceStatusText());
+        this._indicator.menu.addMenuItem(this._sourceSubMenu);
+
+        this._spotifyMenuItem = new PopupMenu.PopupMenuItem('Spotify');
+        this._spotifyMenuItem.connect('activate', () => this._switchToSpotify());
+        this._sourceSubMenu.menu.addMenuItem(this._spotifyMenuItem);
+
+        this._rainwaveSubMenuItem = new PopupMenu.PopupSubMenuMenuItem('Rainwave');
+        this._sourceSubMenu.menu.addMenuItem(this._rainwaveSubMenuItem);
+        for (const station of RAINWAVE_STATIONS) {
+            const item = new PopupMenu.PopupMenuItem(station.name);
+            item.connect('activate', () => this._selectRainwaveStation(station.id));
+            this._rainwaveSubMenuItem.menu.addMenuItem(item);
+            this._rainwaveStationItems.set(station.id, item);
+        }
+
+        this._radiotunesSubMenuItem = new PopupMenu.PopupSubMenuMenuItem('RadioTunes');
+        this._sourceSubMenu.menu.addMenuItem(this._radiotunesSubMenuItem);
+        this._buildRadioTunesSubMenu();
+
+        this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
         // Ítem informativo: tamaño actual (no clickeable)
         this._fontSizeItem = new PopupMenu.PopupMenuItem(
             this._fontSizeLabel(), { reactive: false }
@@ -175,6 +419,34 @@ export default class SpotifyNowPlayingExtension {
             this._saveSettings();
         });
         this._indicator.menu.addMenuItem(resetItem);
+    }
+
+    // RadioTunes no tiene una lista fija de canales pública: el usuario pega
+    // la URL de stream con su listen_key (la que su cuenta premium entrega
+    // para reproductores externos como VLC/Winamp/Sonos).
+    _buildRadioTunesSubMenu() {
+        const entryItem = new PopupMenu.PopupBaseMenuItem({ reactive: false, can_focus: false });
+        this._radiotunesEntry = new St.Entry({
+            hint_text: 'URL de stream (con listen_key)',
+            text: this._radiotunesUrl,
+            can_focus: true,
+            x_expand: true,
+            style: 'width: 260px;',
+        });
+        this._radiotunesEntry.clutter_text.connect('key-press-event', (_actor, event) => {
+            const symbol = event.get_key_symbol();
+            if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter) {
+                this._selectRadioTunes();
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        });
+        entryItem.add_child(this._radiotunesEntry);
+        this._radiotunesSubMenuItem.menu.addMenuItem(entryItem);
+
+        const playItem = new PopupMenu.PopupMenuItem('▶  Reproducir');
+        playItem.connect('activate', () => this._selectRadioTunes());
+        this._radiotunesSubMenuItem.menu.addMenuItem(playItem);
     }
 
     _fontSizeLabel() {
@@ -211,6 +483,10 @@ export default class SpotifyNowPlayingExtension {
             if (ok) {
                 const data = JSON.parse(new TextDecoder().decode(contents));
                 this._fontSize = Number.isInteger(data.fontSize) ? data.fontSize : DEFAULT_FONT_SIZE;
+                this._source = Object.values(SOURCE).includes(data.source) ? data.source : SOURCE.SPOTIFY;
+                this._rainwaveStationId = RAINWAVE_STATIONS.some(s => s.id === data.rainwaveStationId)
+                    ? data.rainwaveStationId : RAINWAVE_STATIONS[0].id;
+                this._radiotunesUrl = typeof data.radiotunesUrl === 'string' ? data.radiotunesUrl : '';
             }
         } catch (_e) {
             this._fontSize = DEFAULT_FONT_SIZE;
@@ -222,18 +498,23 @@ export default class SpotifyNowPlayingExtension {
             const dir = GLib.path_get_dirname(this._settingsPath());
             GLib.mkdir_with_parents(dir, 0o755);
             const file = Gio.File.new_for_path(this._settingsPath());
-            const data = new TextEncoder().encode(JSON.stringify({ fontSize: this._fontSize }));
+            const data = new TextEncoder().encode(JSON.stringify({
+                fontSize: this._fontSize,
+                source: this._source,
+                rainwaveStationId: this._rainwaveStationId,
+                radiotunesUrl: this._radiotunesUrl,
+            }));
             file.replace_contents(
                 data, null, false,
                 Gio.FileCreateFlags.REPLACE_DESTINATION,
                 null
             );
         } catch (e) {
-            console.error(`[spotify-now-playing] Settings save failed: ${e.message}`);
+            console.error(`[powerzoid-music] Settings save failed: ${e.message}`);
         }
     }
 
-    // ─── D-Bus / MPRIS ─────────────────────────────────────────────────────────
+    // ─── D-Bus / MPRIS (Spotify) ───────────────────────────────────────────────
 
     _startWatching() {
         this._watcherId = Gio.bus_watch_name(
@@ -264,14 +545,17 @@ export default class SpotifyNowPlayingExtension {
             null,
             (source, result) => {
                 try {
-                    this._proxy = Gio.DBusProxy.new_finish(result);
+                    const proxy = Gio.DBusProxy.new_finish(result);
+                    // El usuario pudo cambiar de fuente mientras se conectaba
+                    if (this._source !== SOURCE.SPOTIFY) return;
+                    this._proxy = proxy;
                     this._propertiesChangedId = this._proxy.connect(
                         'g-properties-changed',
                         this._onPropertiesChanged.bind(this)
                     );
                     this._updateDisplay();
                 } catch (e) {
-                    console.error(`[spotify-now-playing] Proxy init failed: ${e.message}`);
+                    console.error(`[powerzoid-music] Proxy init failed: ${e.message}`);
                 }
             }
         );
@@ -306,7 +590,7 @@ export default class SpotifyNowPlayingExtension {
             null,
             (proxy, result) => {
                 try { proxy.call_finish(result); }
-                catch (e) { console.error(`[spotify-now-playing] ${method} failed: ${e.message}`); }
+                catch (e) { console.error(`[powerzoid-music] ${method} failed: ${e.message}`); }
             }
         );
     }
@@ -317,7 +601,7 @@ export default class SpotifyNowPlayingExtension {
             if ('Metadata' in props || 'PlaybackStatus' in props)
                 this._updateDisplay();
         } catch (e) {
-            console.error(`[spotify-now-playing] PropertiesChanged error: ${e.message}`);
+            console.error(`[powerzoid-music] PropertiesChanged error: ${e.message}`);
         }
     }
 
@@ -325,6 +609,8 @@ export default class SpotifyNowPlayingExtension {
         if (!this._proxy || !this._songLabel) return;
 
         try {
+            this._popupProgressTrack?.show();
+
             const metadataVariant = this._proxy.get_cached_property('Metadata');
 
             if (!metadataVariant) {
@@ -361,7 +647,7 @@ export default class SpotifyNowPlayingExtension {
             }
 
         } catch (e) {
-            console.error(`[spotify-now-playing] Display update error: ${e.message}`);
+            console.error(`[powerzoid-music] Display update error: ${e.message}`);
             this._songLabel?.set_text(IDLE_TEXT);
         }
     }
@@ -378,7 +664,7 @@ export default class SpotifyNowPlayingExtension {
                    'border: 1px solid rgba(255,255,255,0.1);',
         });
 
-        // Click en la carátula → alternar play/pausa
+        // Click en la carátula/ícono → alternar reproducción
         this._popupCoverIcon = new St.Icon({
             icon_size: POPUP_ART_SIZE,
             x_align: Clutter.ActorAlign.CENTER,
@@ -387,7 +673,10 @@ export default class SpotifyNowPlayingExtension {
         });
         this._popupCoverIcon.connect('button-press-event', (_actor, event) => {
             if (event.get_button() === 1) {
-                this._callMpris('PlayPause');
+                if (this._source === SOURCE.SPOTIFY)
+                    this._callMpris('PlayPause');
+                else
+                    this._toggleRadioPlayback();
                 return Clutter.EVENT_STOP;
             }
             return Clutter.EVENT_PROPAGATE;
@@ -441,7 +730,7 @@ export default class SpotifyNowPlayingExtension {
 
     _onIndicatorEnter() {
         this._cancelHidePopup();
-        if (!this._proxy) return;
+        if (this._source === SOURCE.SPOTIFY && !this._proxy) return;
         this._showHoverPopup();
     }
 
@@ -450,15 +739,22 @@ export default class SpotifyNowPlayingExtension {
     }
 
     _showHoverPopup() {
-        if (!this._popup || !this._proxy) return;
+        if (!this._popup) return;
+        if (this._source === SOURCE.SPOTIFY && !this._proxy) return;
+
         this._positionPopup();
         this._popup.show();
-        this._refreshPosition();
-        if (this._progressTimeoutId === null) {
-            this._progressTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PROGRESS_UPDATE_MS, () => {
-                this._refreshPosition();
-                return GLib.SOURCE_CONTINUE;
-            });
+
+        if (this._source === SOURCE.SPOTIFY) {
+            this._refreshPosition();
+            if (this._progressTimeoutId === null) {
+                this._progressTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PROGRESS_UPDATE_MS, () => {
+                    this._refreshPosition();
+                    return GLib.SOURCE_CONTINUE;
+                });
+            }
+        } else {
+            this._updateRadioPopupContent();
         }
     }
 
@@ -524,7 +820,7 @@ export default class SpotifyNowPlayingExtension {
                     const [positionUs] = reply.recursiveUnpack();
                     this._updateProgress(positionUs);
                 } catch (e) {
-                    console.error(`[spotify-now-playing] Position query failed: ${e.message}`);
+                    console.error(`[powerzoid-music] Position query failed: ${e.message}`);
                 }
             }
         );
@@ -543,6 +839,26 @@ export default class SpotifyNowPlayingExtension {
         this._popupProgressFill.set_style(
             `width: ${fillWidth}px; border-radius: 2px; background-color: #1DB954;`
         );
+    }
+
+    // Contenido del popup de hover cuando la fuente activa es una radio
+    // (Rainwave/RadioTunes): sin carátula ni progreso, solo título/artista
+    // (metadata ICY leída de mpv) y estado en vivo.
+    _updateRadioPopupContent() {
+        if (!this._popup) return;
+        const playing = this._mpvPlayer?.isPlaying ?? false;
+
+        this._setPopupGenericIcon();
+        this._popupTitleLabel?.set_text(
+            this._truncate(this._radioMediaTitle ?? (playing ? 'Sintonizando…' : 'Detenido'), POPUP_TEXT_MAX_LEN)
+        );
+        this._popupArtistLabel?.set_text(this._sourceStatusText().replace('Fuente: ', ''));
+        this._popupProgressTrack?.hide();
+        this._popupDurationLabel?.set_text(playing ? '🔴 En vivo' : '⏹ Detenido');
+    }
+
+    _setPopupGenericIcon() {
+        this._popupCoverIcon?.set_gicon(Gio.ThemedIcon.new('audio-x-generic-symbolic'));
     }
 
     _formatTime(microseconds) {
@@ -571,7 +887,7 @@ export default class SpotifyNowPlayingExtension {
                 this._saveCoverArt(contents, artUrl, cancellable);
             } catch (e) {
                 if (!cancellable.is_cancelled())
-                    console.error(`[spotify-now-playing] Cover art fetch failed: ${e.message}`);
+                    console.error(`[powerzoid-music] Cover art fetch failed: ${e.message}`);
             }
         });
     }
@@ -597,12 +913,12 @@ export default class SpotifyNowPlayingExtension {
                             this._popupCoverIcon?.set_gicon(Gio.FileIcon.new(cacheFile));
                     } catch (e) {
                         if (!cancellable.is_cancelled())
-                            console.error(`[spotify-now-playing] Cover art save failed: ${e.message}`);
+                            console.error(`[powerzoid-music] Cover art save failed: ${e.message}`);
                     }
                 }
             );
         } catch (e) {
-            console.error(`[spotify-now-playing] Cover art save failed: ${e.message}`);
+            console.error(`[powerzoid-music] Cover art save failed: ${e.message}`);
         }
     }
 }
