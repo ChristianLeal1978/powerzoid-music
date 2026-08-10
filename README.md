@@ -1,22 +1,25 @@
 # PowerZoid Music — GNOME Shell Extension
 
-Extensión para GNOME Shell que muestra en la barra superior lo que se está reproduciendo, con controles integrados. Soporta tres fuentes, elegibles con click derecho:
+Extensión para GNOME Shell que muestra en la barra superior lo que se está reproduciendo, con controles integrados. Las tres fuentes aparecen siempre a la vez en el menú (click derecho) y una queda marcada como activa:
 
 - **Spotify** — observado vía MPRIS2/D-Bus, igual que siempre.
-- **Rainwave** — streaming directo de la radio comunitaria de música de videojuegos.
-- **RadioTunes** — streaming directo con tu cuenta premium (mediante tu URL de stream con `listen_key`).
+- **Rainwave** — streaming directo de la radio comunitaria de música de videojuegos (6 estaciones).
+- **RadioTunes** — streaming directo con tu cuenta premium (con tu `listen_key`), con submenús de canales favoritos y del catálogo completo (~99 canales).
 
 ```
 ♫  GameChops – Aryll's Theme
 📻  Rainwave: Game
+📻  RadioTunes: Chillout
 ```
 
 ## Características
 
-- **Selector de fuente** por click derecho: Spotify, Rainwave (5 canales) o RadioTunes (tu URL de stream)
+- **Las tres fuentes visibles a la vez** en el menú (click derecho), con un ✓ marcando la activa
+- **Rainwave**: submenú con sus 6 estaciones (All, Game, Chiptune, OC ReMix, Covers, Chill)
+- **RadioTunes**: campo para tu `listen_key`, botón para marcar/quitar el canal actual de favoritos, submenú **Favoritos** y submenú **Todos los canales** (~99 disponibles)
 - **Artista y título** de la canción actual en tiempo real (Spotify vía MPRIS; Rainwave/RadioTunes vía metadata ICY del stream)
-- **Click en el texto** → siguiente pista (Spotify) o play/stop (radio)
-- **Click en la carátula/ícono** → alterna reproducción
+- **Click en el texto** → Spotify: siguiente pista · Rainwave: siguiente estación · RadioTunes: siguiente favorito
+- **Click en la carátula/ícono** → alterna play/pausa en cualquier fuente
 - **Actualización instantánea** vía señales D-Bus en Spotify (sin polling); sondeo liviano cada 5 s en modo radio
 - Aparece solo cuando hay algo que mostrar; en Spotify desaparece automáticamente al cerrarlo
 
@@ -42,14 +45,14 @@ GNOME Shell no tiene un motor de audio propio, así que para estas dos fuentes l
 sudo dnf install mpv
 ```
 
-- **Rainwave** usa las URLs públicas de sintonización de rainwave.cc (`https://rainwave.cc/tune_in/<id>.mp3`), sin necesidad de cuenta ni API key.
-- **RadioTunes** no tiene una API pública documentada. Su cuenta premium sí ofrece, de forma oficial, una URL de stream con un parámetro `listen_key` pensada para reproductores externos (VLC, Winamp, Sonos, etc.) — es lo mismo que usa la extensión, sin necesidad de guardar tu usuario/contraseña. Para obtenerla:
+- **Rainwave** usa 6 URLs públicas de sintonización de rainwave.cc (All, Game, Chiptune, OC ReMix, Covers, Chill), sin necesidad de cuenta ni API key.
+- **RadioTunes** no tiene una API pública documentada. Su cuenta premium sí ofrece, de forma oficial, un `listen_key` pensado para reproductores externos (VLC, Winamp, Sonos, etc.) — es lo mismo que usa la extensión, sin necesidad de guardar tu usuario/contraseña. La extensión combina ese `listen_key` con un catálogo interno de canales (~99, tomado de `listen.radiotunes.com/premium_high.json`) para construir la URL de cada uno: `http://listen.radiotunes.com/premium_high/<canal>.pls?listen_key=<tu_key>`. Para obtener tu `listen_key`:
   1. Entra a tu cuenta en [radiotunes.com](https://www.radiotunes.com) con tu suscripción premium activa.
-  2. Busca la opción para reproducir en un reproductor externo / dispositivo (Winamp, VLC, Sonos, Squeezebox…) — suele estar en la configuración de la cuenta o en el propio reproductor de la web.
-  3. Copia la URL de stream que te entrega (incluye tu `listen_key`).
-  4. Pégala en el menú de la extensión: click derecho → **Fuente** → **RadioTunes** → pega la URL → **▶ Reproducir**.
+  2. Busca la opción para reproducir en un reproductor externo / dispositivo (Winamp, VLC, Sonos, Squeezebox…) — suele estar en la configuración de la cuenta.
+  3. Copia solo el `listen_key` (una cadena corta alfanumérica) de la URL de stream que te entrega.
+  4. Pégalo en el menú de la extensión: click derecho → **RadioTunes** → campo de texto → Enter. Luego elige un canal desde **Favoritos** o **Todos los canales**.
 
-  Si RadioTunes cambia este mecanismo en el futuro, solo hace falta repetir estos pasos y pegar la URL nueva — la extensión no depende de un formato fijo, reproduce cualquier URL de stream que le des.
+  Si RadioTunes cambia este mecanismo en el futuro, o agrega/quita canales de su catálogo, avisa para actualizar la lista interna — la extensión no hace scraping en vivo del catálogo, lo tiene embebido.
 
 ## Requisitos
 
@@ -112,9 +115,10 @@ rm -rf ~/.local/share/gnome-shell/extensions/spotify-now-playing@cleal.cl
 
 | Acción | Resultado |
 |--------|-----------|
-| Click derecho | Abre el menú: elegir fuente (Spotify/Rainwave/RadioTunes), tamaño de letra |
-| Click en el texto de la barra | Spotify: siguiente pista · Rainwave/RadioTunes: play/stop |
-| Click en la carátula/ícono del popup | Alterna reproducción (PlayPause en Spotify, play/stop en radio) |
+| Click derecho | Abre el menú: Spotify / Rainwave (6 estaciones) / RadioTunes (listen_key, favoritos, todos los canales), tamaño de letra |
+| Click en el texto de la barra | Spotify: siguiente pista · Rainwave: siguiente estación · RadioTunes: siguiente favorito |
+| Click en la carátula/ícono del popup | Alterna play/pausa (todas las fuentes) |
+| ☆/★ dentro del submenú RadioTunes | Añade o quita de favoritos el canal actualmente activo |
 
 El texto se trunca automáticamente a 50 caracteres si es muy largo.
 
