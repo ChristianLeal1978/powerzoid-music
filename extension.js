@@ -338,11 +338,32 @@ export default class PowerZoidMusicExtension {
     // mpv, que siempre se detiene antes de arrancar un stream nuevo.
     _leaveCurrentSource() {
         if (this._source === SOURCE.SPOTIFY) {
-            this._callMpris('Pause');
+            this._pauseSpotify();
             this._stopWatching();
         } else {
             this._stopRadioPlayback();
         }
+    }
+
+    // Llamada directa al bus de Spotify por su nombre conocido, sin depender
+    // de this._proxy: si el proxy aún no está listo (o quedó obsoleto tras
+    // un blip de D-Bus), _callMpris('Pause') no hace nada y no deja rastro.
+    _pauseSpotify() {
+        Gio.DBus.session.call(
+            SPOTIFY_BUS_NAME,
+            MPRIS_OBJECT_PATH,
+            MPRIS_PLAYER_IFACE,
+            'Pause',
+            null,
+            null,
+            Gio.DBusCallFlags.NONE,
+            -1,
+            null,
+            (connection, result) => {
+                try { connection.call_finish(result); }
+                catch (e) { console.error(`[powerzoid-music] Pause Spotify failed: ${e.message}`); }
+            }
+        );
     }
 
     _switchToSpotify() {
@@ -517,8 +538,15 @@ export default class PowerZoidMusicExtension {
             });
             return GLib.SOURCE_CONTINUE;
         };
-        poll();
-        this._radioPollTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, RADIO_POLL_MS, poll);
+        // mpv tarda un instante en crear su socket IPC tras arrancar:
+        // preguntar en t=0 casi siempre falla en silencio y deja el rótulo
+        // mostrando el canal hasta el siguiente sondeo completo. Se espera
+        // 1s antes del primer intento y luego se sigue en el intervalo normal.
+        this._radioPollTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
+            poll();
+            this._radioPollTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, RADIO_POLL_MS, poll);
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     _stopRadioPoll() {
