@@ -77,6 +77,7 @@ export class MpvPlayer {
             this._subprocess.force_exit();
         } catch (_e) { /* ya había terminado */ }
         this._subprocess = null;
+        this.onStateChanged?.(false);
     }
 
     destroy() {
