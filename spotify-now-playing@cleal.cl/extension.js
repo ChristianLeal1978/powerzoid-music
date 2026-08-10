@@ -188,16 +188,17 @@ export default class PowerZoidMusicExtension {
         this._radioMediaTitle      = null;
 
         // Ítems del menú de selección de fuente
-        this._spotifyMenuItem            = null;
-        this._rainwaveSubMenuItem        = null;
-        this._rainwaveStationItems       = new Map();
-        this._radiotunesSubMenuItem      = null;
-        this._radiotunesEntry            = null;
+        this._spotifyMenuItem              = null;
+        this._rainwaveSubMenuItem          = null;
+        this._rainwaveStationItems         = new Map();
+        this._radiotunesSubMenuItem        = null;
+        this._radiotunesEntryItem          = null;
+        this._radiotunesEntry              = null;
+        this._radiotunesChangeKeyItem      = null;
         this._radiotunesFavoriteToggleItem = null;
-        this._radiotunesFavoritesSubMenuItem = null;
-        this._radiotunesAllSubMenuItem   = null;
-        this._radiotunesAllItems         = new Map();
-        this._radiotunesFavoriteItems    = new Map();
+        this._radiotunesFavoritesSection   = null;
+        this._radiotunesAllItems           = new Map();
+        this._radiotunesFavoriteItems      = new Map();
 
         // Popup de hover
         this._popup               = null;
@@ -311,10 +312,11 @@ export default class PowerZoidMusicExtension {
         this._rainwaveSubMenuItem            = null;
         this._rainwaveStationItems.clear();
         this._radiotunesSubMenuItem          = null;
+        this._radiotunesEntryItem            = null;
         this._radiotunesEntry                = null;
+        this._radiotunesChangeKeyItem        = null;
         this._radiotunesFavoriteToggleItem   = null;
-        this._radiotunesFavoritesSubMenuItem = null;
-        this._radiotunesAllSubMenuItem       = null;
+        this._radiotunesFavoritesSection     = null;
         this._radiotunesAllItems.clear();
         this._radiotunesFavoriteItems.clear();
     }
@@ -329,10 +331,14 @@ export default class PowerZoidMusicExtension {
             this._songLabel.set_text(this._radioIdleLabel());
     }
 
-    // Libera lo que la fuente actual estuviera usando (proxy D-Bus o mpv)
-    // antes de pasar a otra fuente.
+    // Libera lo que la fuente actual estuviera usando antes de pasar a otra:
+    // Spotify es una app externa que sigue sonando aunque dejemos de
+    // observarla por D-Bus, así que hay que pausarla explícitamente para
+    // que no se solape con la radio. Rainwave/RadioTunes comparten el mismo
+    // mpv, que siempre se detiene antes de arrancar un stream nuevo.
     _leaveCurrentSource() {
         if (this._source === SOURCE.SPOTIFY) {
+            this._callMpris('Pause');
             this._stopWatching();
         } else {
             this._stopRadioPlayback();
@@ -373,6 +379,7 @@ export default class PowerZoidMusicExtension {
             return;
         }
         this._radiotunesListenKey = key;
+        this._refreshRadiotunesKeyRow();
         this._leaveCurrentSource();
         this._radiotunesActiveSlug = slug;
         this._source = SOURCE.RADIOTUNES;
@@ -595,8 +602,13 @@ export default class PowerZoidMusicExtension {
     // RadioTunes no tiene una lista fija de canales pública: el usuario pega
     // solo su listen_key (obtenido de su cuenta premium) y la extensión arma
     // la URL de cada canal a partir del catálogo conocido.
+    //
+    // Favoritos y Todos los canales van como secciones planas dentro de este
+    // mismo submenú (no como sub-submenús): GNOME Shell cierra el menú entero
+    // al anidar un PopupSubMenuMenuItem dentro de otro, así que un tercer
+    // nivel de anidación no es viable.
     _buildRadiotunesSubMenu() {
-        const entryItem = new PopupMenu.PopupBaseMenuItem({ reactive: false, can_focus: false });
+        this._radiotunesEntryItem = new PopupMenu.PopupBaseMenuItem({ reactive: false, can_focus: false });
         this._radiotunesEntry = new St.Entry({
             hint_text: 'Tu listen_key de RadioTunes',
             text: this._radiotunesListenKey,
@@ -609,41 +621,57 @@ export default class PowerZoidMusicExtension {
             if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter) {
                 this._radiotunesListenKey = this._radiotunesEntry.get_text().trim();
                 this._saveSettings();
+                this._refreshRadiotunesKeyRow();
                 return Clutter.EVENT_STOP;
             }
             return Clutter.EVENT_PROPAGATE;
         });
-        entryItem.add_child(this._radiotunesEntry);
-        this._radiotunesSubMenuItem.menu.addMenuItem(entryItem);
+        this._radiotunesEntryItem.add_child(this._radiotunesEntry);
+        this._radiotunesSubMenuItem.menu.addMenuItem(this._radiotunesEntryItem);
+
+        this._radiotunesChangeKeyItem = new PopupMenu.PopupMenuItem('🔑  Cambiar listen_key');
+        this._radiotunesChangeKeyItem.connect('activate', () => {
+            this._radiotunesEntryItem.visible = true;
+            this._radiotunesChangeKeyItem.visible = false;
+        });
+        this._radiotunesSubMenuItem.menu.addMenuItem(this._radiotunesChangeKeyItem);
 
         this._radiotunesFavoriteToggleItem = new PopupMenu.PopupMenuItem('☆  Añadir a favoritos');
         this._radiotunesFavoriteToggleItem.connect('activate', () => this._toggleRadiotunesFavorite());
         this._radiotunesSubMenuItem.menu.addMenuItem(this._radiotunesFavoriteToggleItem);
 
-        this._radiotunesSubMenuItem.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._radiotunesSubMenuItem.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem('Favoritos'));
 
-        this._radiotunesFavoritesSubMenuItem = new PopupMenu.PopupSubMenuMenuItem('Favoritos');
-        this._radiotunesSubMenuItem.menu.addMenuItem(this._radiotunesFavoritesSubMenuItem);
+        this._radiotunesFavoritesSection = new PopupMenu.PopupMenuSection();
+        this._radiotunesSubMenuItem.menu.addMenuItem(this._radiotunesFavoritesSection);
         this._rebuildRadiotunesFavoritesMenu();
 
-        this._radiotunesAllSubMenuItem = new PopupMenu.PopupSubMenuMenuItem('Todos los canales');
-        this._radiotunesSubMenuItem.menu.addMenuItem(this._radiotunesAllSubMenuItem);
+        this._radiotunesSubMenuItem.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem('Todos los canales'));
+
         for (const channel of RADIOTUNES_CHANNELS) {
             const item = new PopupMenu.PopupMenuItem(channel.name);
             item.connect('activate', () => this._selectRadiotunesChannel(channel.slug));
-            this._radiotunesAllSubMenuItem.menu.addMenuItem(item);
+            this._radiotunesSubMenuItem.menu.addMenuItem(item);
             this._radiotunesAllItems.set(channel.slug, item);
         }
+
+        this._refreshRadiotunesKeyRow();
+    }
+
+    _refreshRadiotunesKeyRow() {
+        const hasKey = !!this._radiotunesListenKey;
+        if (this._radiotunesEntryItem) this._radiotunesEntryItem.visible = !hasKey;
+        if (this._radiotunesChangeKeyItem) this._radiotunesChangeKeyItem.visible = hasKey;
     }
 
     _rebuildRadiotunesFavoritesMenu() {
-        this._radiotunesFavoritesSubMenuItem.menu.removeAll();
+        this._radiotunesFavoritesSection.removeAll();
         this._radiotunesFavoriteItems.clear();
 
         if (this._radiotunesFavorites.length === 0) {
             const empty = new PopupMenu.PopupMenuItem('Sin favoritos aún', { reactive: false });
             empty.label.set_style('color: #aaa; font-style: italic;');
-            this._radiotunesFavoritesSubMenuItem.menu.addMenuItem(empty);
+            this._radiotunesFavoritesSection.addMenuItem(empty);
             return;
         }
 
@@ -651,7 +679,7 @@ export default class PowerZoidMusicExtension {
             const channel = RADIOTUNES_CHANNELS.find(c => c.slug === slug);
             const item = new PopupMenu.PopupMenuItem(channel?.name ?? slug);
             item.connect('activate', () => this._selectRadiotunesChannel(slug));
-            this._radiotunesFavoritesSubMenuItem.menu.addMenuItem(item);
+            this._radiotunesFavoritesSection.addMenuItem(item);
             this._radiotunesFavoriteItems.set(slug, item);
         }
     }
