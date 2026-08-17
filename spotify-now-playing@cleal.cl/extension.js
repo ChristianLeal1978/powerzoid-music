@@ -18,9 +18,10 @@
  *    así que la extensión lanza `mpv` como subproceso y lo controla por su
  *    socket IPC (play/stop y lectura de metadata ICY). Requiere mpv
  *    instalado (`sudo dnf install mpv`).
- *  - Rainwave en particular expone además una API pública (api4/info) con
- *    título, artista y carátula de la canción actual, más precisa que el
- *    StreamTitle ICY genérico — se consulta aparte y se usa en su lugar.
+ *  - Rainwave y RadioTunes exponen además una API pública propia (api4/info
+ *    y track_history respectivamente) con título, artista y carátula de la
+ *    canción actual, más precisa que el StreamTitle ICY genérico — se
+ *    consulta aparte y se usa en su lugar.
  */
 
 import GLib from 'gi://GLib';
@@ -40,6 +41,10 @@ const SOURCE = { SPOTIFY: 'spotify', RAINWAVE: 'rainwave', RADIOTUNES: 'radiotun
 
 const RAINWAVE_API_URL = 'https://rainwave.cc/api4/info';
 
+// AudioAddict (red detrás de RadioTunes) también expone el historial de
+// reproducción de cada canal como JSON público, sin necesidad de listen_key.
+const RADIOTUNES_TRACK_HISTORY_URL = 'https://api.audioaddict.com/v1/radiotunes/track_history/channel';
+
 const RAINWAVE_STATIONS = [
     { id: 5, name: 'All',      url: 'https://rainwave.cc/tune_in/5.mp3.m3u' },
     { id: 1, name: 'Game',     url: 'https://rainwave.cc/tune_in/1.mp3.m3u' },
@@ -52,105 +57,105 @@ const RAINWAVE_STATIONS = [
 // Catálogo de canales premium de RadioTunes (http://listen.radiotunes.com/premium_high.json).
 // La extensión arma la URL final combinando el slug con el listen_key del usuario.
 const RADIOTUNES_CHANNELS = [
-    { name: '00s Country', slug: '00scountry' },
-    { name: '00s Dance', slug: '00sdance' },
-    { name: '00s Hits', slug: 'hit00s' },
-    { name: '00s R&B', slug: '00srnb' },
-    { name: '00s Rock', slug: '00srock' },
-    { name: '60s Hits', slug: 'hit60s' },
-    { name: '60s Rock', slug: '60srock' },
-    { name: '70s Hits', slug: 'hit70s' },
-    { name: '70s Rock', slug: '70srock' },
-    { name: '80s Alt & New Wave', slug: '80saltnnewwave' },
-    { name: '80s Dance', slug: '80sdance' },
-    { name: '80s Hits', slug: 'the80s' },
-    { name: '80s Rock Hits', slug: '80srock' },
-    { name: '90s Country', slug: '90scountry' },
-    { name: '90s Dance', slug: '90sdance' },
-    { name: '90s Hits', slug: 'hit90s' },
-    { name: '90s R&B', slug: '90srnb' },
-    { name: '90s Rock', slug: '90srock' },
-    { name: 'Alternative Rock', slug: 'altrock' },
-    { name: 'Ambient', slug: 'ambient' },
-    { name: 'American Songbook', slug: 'americansongbook' },
-    { name: 'Baroque Period', slug: 'baroque' },
-    { name: 'Bebop Jazz', slug: 'bebop' },
-    { name: 'Blues Rock', slug: 'bluesrock' },
-    { name: 'Bossa Nova', slug: 'bossanova' },
-    { name: 'Café de Paris', slug: 'cafedeparis' },
-    { name: 'Chill & Tropical House', slug: 'chillntropicalhouse' },
-    { name: 'Chillout', slug: 'chillout' },
-    { name: 'Classic Hip-Hop', slug: 'classicrap' },
-    { name: 'Classic Motown', slug: 'classicmotown' },
-    { name: 'Classic Rock', slug: 'classicrock' },
-    { name: 'Classical Guitar', slug: 'guitar' },
-    { name: 'Classical Period', slug: 'classicalperiod' },
-    { name: 'Classical Piano Trios', slug: 'classicalpianotrios' },
-    { name: 'Club Bollywood', slug: 'clubbollywood' },
-    { name: 'Coffee Jazz', slug: 'coffeejazz' },
-    { name: 'Contemporary Christian', slug: 'christian' },
-    { name: 'Country', slug: 'country' },
-    { name: 'Cuban Lounge', slug: 'cubanlounge' },
-    { name: 'Dance Hits', slug: 'dancehits' },
-    { name: 'DaTempo Lounge', slug: 'datempolounge' },
-    { name: 'Dave Koz & Friends', slug: 'davekoz' },
-    { name: 'Disco Party', slug: 'discoparty' },
-    { name: 'Downtempo Lounge', slug: 'downtempolounge' },
-    { name: 'Dreamscapes', slug: 'dreamscapes' },
-    { name: 'Easy Listening', slug: 'easylistening' },
-    { name: 'EDM Fest', slug: 'edmfest' },
-    { name: 'Epic Music', slug: 'epicmusic' },
-    { name: 'EuroDance', slug: 'eurodance' },
-    { name: 'Hard Rock', slug: 'hardrock' },
-    { name: 'Indie Dance', slug: 'indiedance' },
-    { name: 'Indie Rock', slug: 'indierock' },
-    { name: 'Jazz Classics', slug: 'jazzclassics' },
-    { name: 'J-pop', slug: 'jpop' },
-    { name: 'K-pop', slug: 'kpop' },
-    { name: 'Latin Pop Hits', slug: 'latinpophits' },
-    { name: 'Lounge', slug: 'lounge' },
-    { name: 'Love Music', slug: 'lovemusic' },
-    { name: 'Meditation', slug: 'meditation' },
-    { name: 'Mellow Jazz', slug: 'mellowjazz' },
-    { name: 'Mellow Smooth Jazz', slug: 'mellowsmoothjazz' },
-    { name: 'Metal', slug: 'metal' },
-    { name: 'Modern Blues', slug: 'modernblues' },
-    { name: 'Modern Rock', slug: 'modernrock' },
-    { name: 'Mostly Classical', slug: 'classical' },
-    { name: 'Movie Soundtracks', slug: 'soundtracks' },
-    { name: 'Mozart', slug: 'mozart' },
-    { name: 'Nature', slug: 'nature' },
-    { name: 'New Age', slug: 'newage' },
-    { name: 'Old School Funk & Soul', slug: 'oldschoolfunknsoul' },
-    { name: 'Oldies', slug: 'oldies' },
-    { name: 'Piano Jazz', slug: 'pianojazz' },
-    { name: 'Pop Rock', slug: 'poprock' },
-    { name: 'Reggaeton', slug: 'reggaeton' },
-    { name: 'Relaxation', slug: 'relaxation' },
-    { name: 'Relaxing Ambient Piano', slug: 'relaxingambientpiano' },
-    { name: 'Romantic Period', slug: 'romantic' },
-    { name: 'Romantica', slug: 'romantica' },
-    { name: 'Romántica Latina', slug: 'romanticalatina' },
-    { name: 'Roots Reggae', slug: 'rootsreggae' },
-    { name: 'Salsa', slug: 'salsa' },
-    { name: 'Sleep Relaxation', slug: 'sleeprelaxation' },
-    { name: 'Slow R&B', slug: 'slowjams' },
-    { name: 'Smooth Beats', slug: 'smoothbeats' },
-    { name: 'Smooth Bossa Nova', slug: 'smoothbossanova' },
-    { name: 'Smooth Jazz', slug: 'smoothjazz' },
-    { name: "Smooth Jazz 24'7", slug: 'smoothjazz247' },
-    { name: 'Smooth Lounge', slug: 'smoothlounge' },
-    { name: 'Soft Rock', slug: 'softrock' },
-    { name: 'Solo Piano', slug: 'solopiano' },
-    { name: 'Top Hits', slug: 'tophits' },
-    { name: 'Uptempo Smooth Jazz', slug: 'uptemposmoothjazz' },
-    { name: 'Urban Hits', slug: 'urbanjamz' },
-    { name: 'Urban Pop Hits', slug: 'urbanpophits' },
-    { name: 'Vocal Chillout', slug: 'vocalchillout' },
-    { name: 'Vocal Lounge', slug: 'vocallounge' },
-    { name: 'Vocal New Age', slug: 'vocalnewage' },
-    { name: 'Vocal Smooth Jazz', slug: 'vocalsmoothjazz' },
-    { name: 'World', slug: 'world' },
+    { name: '00s Country', slug: '00scountry', id: 437 },
+    { name: '00s Dance', slug: '00sdance', id: 444 },
+    { name: '00s Hits', slug: 'hit00s', id: 358 },
+    { name: '00s R&B', slug: '00srnb', id: 299 },
+    { name: '00s Rock', slug: '00srock', id: 440 },
+    { name: '60s Hits', slug: 'hit60s', id: 214 },
+    { name: '60s Rock', slug: '60srock', id: 227 },
+    { name: '70s Hits', slug: 'hit70s', id: 24 },
+    { name: '70s Rock', slug: '70srock', id: 441 },
+    { name: '80s Alt & New Wave', slug: '80saltnnewwave', id: 354 },
+    { name: '80s Dance', slug: '80sdance', id: 228 },
+    { name: '80s Hits', slug: 'the80s', id: 22 },
+    { name: '80s Rock Hits', slug: '80srock', id: 141 },
+    { name: '90s Country', slug: '90scountry', id: 436 },
+    { name: '90s Dance', slug: '90sdance', id: 443 },
+    { name: '90s Hits', slug: 'hit90s', id: 186 },
+    { name: '90s R&B', slug: '90srnb', id: 229 },
+    { name: '90s Rock', slug: '90srock', id: 171 },
+    { name: 'Alternative Rock', slug: 'altrock', id: 49 },
+    { name: 'Ambient', slug: 'ambient', id: 329 },
+    { name: 'American Songbook', slug: 'americansongbook', id: 93 },
+    { name: 'Baroque Period', slug: 'baroque', id: 342 },
+    { name: 'Bebop Jazz', slug: 'bebop', id: 72 },
+    { name: 'Blues Rock', slug: 'bluesrock', id: 356 },
+    { name: 'Bossa Nova', slug: 'bossanova', id: 54 },
+    { name: 'Café de Paris', slug: 'cafedeparis', id: 197 },
+    { name: 'Chill & Tropical House', slug: 'chillntropicalhouse', id: 422 },
+    { name: 'Chillout', slug: 'chillout', id: 330 },
+    { name: 'Classic Hip-Hop', slug: 'classicrap', id: 38 },
+    { name: 'Classic Motown', slug: 'classicmotown', id: 202 },
+    { name: 'Classic Rock', slug: 'classicrock', id: 46 },
+    { name: 'Classical Guitar', slug: 'guitar', id: 19 },
+    { name: 'Classical Period', slug: 'classicalperiod', id: 343 },
+    { name: 'Classical Piano Trios', slug: 'classicalpianotrios', id: 94 },
+    { name: 'Club Bollywood', slug: 'clubbollywood', id: 140 },
+    { name: 'Coffee Jazz', slug: 'coffeejazz', id: 511 },
+    { name: 'Contemporary Christian', slug: 'christian', id: 51 },
+    { name: 'Country', slug: 'country', id: 25 },
+    { name: 'Cuban Lounge', slug: 'cubanlounge', id: 415 },
+    { name: 'Dance Hits', slug: 'dancehits', id: 71 },
+    { name: 'DaTempo Lounge', slug: 'datempolounge', id: 48 },
+    { name: 'Dave Koz & Friends', slug: 'davekoz', id: 298 },
+    { name: 'Disco Party', slug: 'discoparty', id: 307 },
+    { name: 'Downtempo Lounge', slug: 'downtempolounge', id: 331 },
+    { name: 'Dreamscapes', slug: 'dreamscapes', id: 109 },
+    { name: 'Easy Listening', slug: 'easylistening', id: 514 },
+    { name: 'EDM Fest', slug: 'edmfest', id: 332 },
+    { name: 'Epic Music', slug: 'epicmusic', id: 516 },
+    { name: 'EuroDance', slug: 'eurodance', id: 333 },
+    { name: 'Hard Rock', slug: 'hardrock', id: 130 },
+    { name: 'Indie Dance', slug: 'indiedance', id: 423 },
+    { name: 'Indie Rock', slug: 'indierock', id: 37 },
+    { name: 'Jazz Classics', slug: 'jazzclassics', id: 26 },
+    { name: 'J-pop', slug: 'jpop', id: 110 },
+    { name: 'K-pop', slug: 'kpop', id: 211 },
+    { name: 'Latin Pop Hits', slug: 'latinpophits', id: 417 },
+    { name: 'Lounge', slug: 'lounge', id: 334 },
+    { name: 'Love Music', slug: 'lovemusic', id: 61 },
+    { name: 'Meditation', slug: 'meditation', id: 303 },
+    { name: 'Mellow Jazz', slug: 'mellowjazz', id: 188 },
+    { name: 'Mellow Smooth Jazz', slug: 'mellowsmoothjazz', id: 297 },
+    { name: 'Metal', slug: 'metal', id: 129 },
+    { name: 'Modern Blues', slug: 'modernblues', id: 128 },
+    { name: 'Modern Rock', slug: 'modernrock', id: 131 },
+    { name: 'Mostly Classical', slug: 'classical', id: 17 },
+    { name: 'Movie Soundtracks', slug: 'soundtracks', id: 50 },
+    { name: 'Mozart', slug: 'mozart', id: 344 },
+    { name: 'Nature', slug: 'nature', id: 119 },
+    { name: 'New Age', slug: 'newage', id: 18 },
+    { name: 'Old School Funk & Soul', slug: 'oldschoolfunknsoul', id: 273 },
+    { name: 'Oldies', slug: 'oldies', id: 39 },
+    { name: 'Piano Jazz', slug: 'pianojazz', id: 55 },
+    { name: 'Pop Rock', slug: 'poprock', id: 139 },
+    { name: 'Reggaeton', slug: 'reggaeton', id: 304 },
+    { name: 'Relaxation', slug: 'relaxation', id: 120 },
+    { name: 'Relaxing Ambient Piano', slug: 'relaxingambientpiano', id: 306 },
+    { name: 'Romantic Period', slug: 'romantic', id: 345 },
+    { name: 'Romantica', slug: 'romantica', id: 108 },
+    { name: 'Romántica Latina', slug: 'romanticalatina', id: 420 },
+    { name: 'Roots Reggae', slug: 'rootsreggae', id: 23 },
+    { name: 'Salsa', slug: 'salsa', id: 27 },
+    { name: 'Sleep Relaxation', slug: 'sleeprelaxation', id: 406 },
+    { name: 'Slow R&B', slug: 'slowjams', id: 322 },
+    { name: 'Smooth Beats', slug: 'smoothbeats', id: 407 },
+    { name: 'Smooth Bossa Nova', slug: 'smoothbossanova', id: 187 },
+    { name: 'Smooth Jazz', slug: 'smoothjazz', id: 20 },
+    { name: "Smooth Jazz 24'7", slug: 'smoothjazz247', id: 118 },
+    { name: 'Smooth Lounge', slug: 'smoothlounge', id: 173 },
+    { name: 'Soft Rock', slug: 'softrock', id: 132 },
+    { name: 'Solo Piano', slug: 'solopiano', id: 52 },
+    { name: 'Top Hits', slug: 'tophits', id: 21 },
+    { name: 'Uptempo Smooth Jazz', slug: 'uptemposmoothjazz', id: 41 },
+    { name: 'Urban Hits', slug: 'urbanjamz', id: 42 },
+    { name: 'Urban Pop Hits', slug: 'urbanpophits', id: 305 },
+    { name: 'Vocal Chillout', slug: 'vocalchillout', id: 335 },
+    { name: 'Vocal Lounge', slug: 'vocallounge', id: 336 },
+    { name: 'Vocal New Age', slug: 'vocalnewage', id: 121 },
+    { name: 'Vocal Smooth Jazz', slug: 'vocalsmoothjazz', id: 111 },
+    { name: 'World', slug: 'world', id: 43 },
 ];
 
 const MAX_TEXT_LENGTH     = 50;
@@ -544,6 +549,8 @@ export default class PowerZoidMusicExtension {
         const poll = () => {
             if (this._source === SOURCE.RAINWAVE) {
                 this._pollRainwaveNowPlaying();
+            } else if (this._source === SOURCE.RADIOTUNES) {
+                this._pollRadiotunesNowPlaying();
             } else {
                 this._mpvPlayer?.queryMediaTitle((title) => {
                     this._radioMediaTitle = title;
@@ -622,6 +629,50 @@ export default class PowerZoidMusicExtension {
                     }
                 } catch (e) {
                     console.error(`[powerzoid-music] Rainwave info parse failed: ${e.message}`);
+                }
+            }
+        );
+    }
+
+    // RadioTunes (red AudioAddict) publica el historial de reproducción de
+    // cada canal en JSON público sin listen_key; el primer elemento es la
+    // canción sonando ahora mismo (igual criterio que con Rainwave).
+    _pollRadiotunesNowPlaying() {
+        const slug = this._radiotunesActiveSlug;
+        const channel = RADIOTUNES_CHANNELS.find(c => c.slug === slug);
+        if (!channel) return;
+
+        Gio.File.new_for_uri(`${RADIOTUNES_TRACK_HISTORY_URL}/${channel.id}`).load_contents_async(
+            null,
+            (file, result) => {
+                let contents;
+                try {
+                    [, contents] = file.load_contents_finish(result);
+                } catch (e) {
+                    console.error(`[powerzoid-music] RadioTunes history fetch failed: ${e.message}`);
+                    return;
+                }
+                // La fuente o el canal pudieron cambiar mientras la petición
+                // estaba en vuelo.
+                if (this._source !== SOURCE.RADIOTUNES || this._radiotunesActiveSlug !== slug)
+                    return;
+
+                try {
+                    const history = JSON.parse(new TextDecoder().decode(contents));
+                    const track = history?.[0];
+                    if (!track) return;
+
+                    this._radioMediaTitle = track.display_title || track.title || '?';
+                    this._radioArtist = track.display_artist || track.artist || null;
+                    this._applyRadioNowPlaying();
+
+                    const artUrl = track.art_url ? `https:${track.art_url}` : null;
+                    if (artUrl !== this._lastArtUrl) {
+                        this._lastArtUrl = artUrl;
+                        this._loadCoverArt(artUrl);
+                    }
+                } catch (e) {
+                    console.error(`[powerzoid-music] RadioTunes history parse failed: ${e.message}`);
                 }
             }
         );
@@ -1174,15 +1225,15 @@ export default class PowerZoidMusicExtension {
     }
 
     // Contenido del popup de hover cuando la fuente activa es una radio.
-    // Rainwave trae título/artista/carátula reales desde su API; RadioTunes
-    // solo trae título vía StreamTitle ICY (sin carátula, ícono genérico).
+    // Rainwave y RadioTunes traen título/artista/carátula reales desde sus
+    // respectivas APIs (ver _pollRainwaveNowPlaying / _pollRadiotunesNowPlaying).
     _updateRadioPopupContent() {
         if (!this._popup) return;
         const playing = this._mpvPlayer?.isPlaying ?? false;
 
-        // Para Rainwave no se toca el ícono acá: ya lo actualiza
-        // _pollRainwaveNowPlaying vía _loadCoverArt en cuanto llega la carátula.
-        if (this._source !== SOURCE.RAINWAVE)
+        // Para Rainwave/RadioTunes no se toca el ícono acá: ya lo actualiza
+        // el sondeo respectivo vía _loadCoverArt en cuanto llega la carátula.
+        if (this._source !== SOURCE.RAINWAVE && this._source !== SOURCE.RADIOTUNES)
             this._setPopupGenericIcon();
 
         this._popupTitleLabel?.set_text(
