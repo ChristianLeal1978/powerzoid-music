@@ -18,6 +18,9 @@
  *    así que la extensión lanza `mpv` como subproceso y lo controla por su
  *    socket IPC (play/stop y lectura de metadata ICY). Requiere mpv
  *    instalado (`sudo dnf install mpv`).
+ *  - Rainwave en particular expone además una API pública (api4/info) con
+ *    título, artista y carátula de la canción actual, más precisa que el
+ *    StreamTitle ICY genérico — se consulta aparte y se usa en su lugar.
  */
 
 import GLib from 'gi://GLib';
@@ -34,6 +37,8 @@ const MPRIS_OBJECT_PATH   = '/org/mpris/MediaPlayer2';
 const MPRIS_PLAYER_IFACE  = 'org.mpris.MediaPlayer2.Player';
 
 const SOURCE = { SPOTIFY: 'spotify', RAINWAVE: 'rainwave', RADIOTUNES: 'radiotunes' };
+
+const RAINWAVE_API_URL = 'https://rainwave.cc/api4/info';
 
 const RAINWAVE_STATIONS = [
     { id: 5, name: 'All',      url: 'https://rainwave.cc/tune_in/5.mp3.m3u' },
@@ -186,6 +191,7 @@ export default class PowerZoidMusicExtension {
         this._mpvPlayer            = null;
         this._radioPollTimeoutId   = null;
         this._radioMediaTitle      = null;
+        this._radioArtist          = null;
 
         // Ítems del menú de selección de fuente
         this._spotifyMenuItem              = null;
@@ -481,8 +487,10 @@ export default class PowerZoidMusicExtension {
 
     _startRadioPlayback(url) {
         this._radioMediaTitle = null;
+        this._radioArtist = null;
         this._songLabel.set_text(this._radioIdleLabel());
         this._setPopupGenericIcon();
+        this._lastArtUrl = null;
         this._mpvPlayer.play(url);
     }
 
@@ -490,6 +498,7 @@ export default class PowerZoidMusicExtension {
         this._mpvPlayer?.stop();
         this._stopRadioPoll();
         this._radioMediaTitle = null;
+        this._radioArtist = null;
     }
 
     _toggleRadioPlayback() {
@@ -518,6 +527,7 @@ export default class PowerZoidMusicExtension {
         }
         this._stopRadioPoll();
         this._radioMediaTitle = null;
+        this._radioArtist = null;
         if (this._source !== SOURCE.SPOTIFY) {
             this._songLabel?.set_text(this._radioIdleLabel());
             this._updateRadioPopupContent();
@@ -532,10 +542,15 @@ export default class PowerZoidMusicExtension {
     _startRadioPoll() {
         if (this._radioPollTimeoutId !== null) return;
         const poll = () => {
-            this._mpvPlayer?.queryMediaTitle((title) => {
-                this._radioMediaTitle = title;
-                this._applyRadioMediaTitle(title);
-            });
+            if (this._source === SOURCE.RAINWAVE) {
+                this._pollRainwaveNowPlaying();
+            } else {
+                this._mpvPlayer?.queryMediaTitle((title) => {
+                    this._radioMediaTitle = title;
+                    this._radioArtist = null;
+                    this._applyRadioNowPlaying();
+                });
+            }
             return GLib.SOURCE_CONTINUE;
         };
         // mpv tarda un instante en crear su socket IPC tras arrancar:
@@ -556,13 +571,60 @@ export default class PowerZoidMusicExtension {
         }
     }
 
-    _applyRadioMediaTitle(title) {
+    _applyRadioNowPlaying() {
         if (this._source === SOURCE.SPOTIFY) return;
-        let text = `📻  ${title}`;
+        const label = this._radioArtist
+            ? `${this._radioArtist} – ${this._radioMediaTitle}`
+            : this._radioMediaTitle;
+        let text = `📻  ${label}`;
         if (text.length > MAX_TEXT_LENGTH)
             text = text.slice(0, MAX_TEXT_LENGTH - 1) + '…';
         this._songLabel?.set_text(text);
         this._updateRadioPopupContent();
+    }
+
+    // Rainwave publica su "now playing" (título, artista y carátula) en una
+    // API pública sin autenticación — más preciso que el StreamTitle ICY
+    // genérico que mpv lee del stream de audio. `songs[0]` es la canción
+    // sonando ahora mismo, igual que hace el widget oficial de Rainwave.
+    _pollRainwaveNowPlaying() {
+        const stationId = this._rainwaveStationId;
+        Gio.File.new_for_uri(`${RAINWAVE_API_URL}?sid=${stationId}`).load_contents_async(
+            null,
+            (file, result) => {
+                let contents;
+                try {
+                    [, contents] = file.load_contents_finish(result);
+                } catch (e) {
+                    console.error(`[powerzoid-music] Rainwave info fetch failed: ${e.message}`);
+                    return;
+                }
+                // La fuente o la estación pudieron cambiar mientras la petición
+                // estaba en vuelo.
+                if (this._source !== SOURCE.RAINWAVE || this._rainwaveStationId !== stationId)
+                    return;
+
+                try {
+                    const data = JSON.parse(new TextDecoder().decode(contents));
+                    const song = data?.sched_current?.songs?.[0];
+                    if (!song) return;
+
+                    this._radioMediaTitle = song.title ?? '?';
+                    this._radioArtist = Array.isArray(song.artists) && song.artists.length > 0
+                        ? song.artists.map(a => a.name).join(', ') : null;
+                    this._applyRadioNowPlaying();
+
+                    const art = song.albums?.[0]?.art;
+                    const artUrl = art ? `https://rainwave.cc${art}_320.jpg` : null;
+                    if (artUrl !== this._lastArtUrl) {
+                        this._lastArtUrl = artUrl;
+                        this._loadCoverArt(artUrl);
+                    }
+                } catch (e) {
+                    console.error(`[powerzoid-music] Rainwave info parse failed: ${e.message}`);
+                }
+            }
+        );
     }
 
     _radioIdleLabel() {
@@ -1111,18 +1173,24 @@ export default class PowerZoidMusicExtension {
         );
     }
 
-    // Contenido del popup de hover cuando la fuente activa es una radio
-    // (Rainwave/RadioTunes): sin carátula ni progreso, solo título/artista
-    // (metadata ICY leída de mpv) y estado en vivo.
+    // Contenido del popup de hover cuando la fuente activa es una radio.
+    // Rainwave trae título/artista/carátula reales desde su API; RadioTunes
+    // solo trae título vía StreamTitle ICY (sin carátula, ícono genérico).
     _updateRadioPopupContent() {
         if (!this._popup) return;
         const playing = this._mpvPlayer?.isPlaying ?? false;
 
-        this._setPopupGenericIcon();
+        // Para Rainwave no se toca el ícono acá: ya lo actualiza
+        // _pollRainwaveNowPlaying vía _loadCoverArt en cuanto llega la carátula.
+        if (this._source !== SOURCE.RAINWAVE)
+            this._setPopupGenericIcon();
+
         this._popupTitleLabel?.set_text(
             this._truncate(this._radioMediaTitle ?? (playing ? 'Sintonizando…' : 'Detenido'), POPUP_TEXT_MAX_LEN)
         );
-        this._popupArtistLabel?.set_text(this._sourceLabel());
+        this._popupArtistLabel?.set_text(
+            this._truncate(this._radioArtist ?? this._sourceLabel(), POPUP_TEXT_MAX_LEN)
+        );
         this._popupProgressTrack?.hide();
         this._popupDurationLabel?.set_text(playing ? '🔴 En vivo' : '⏹ Detenido');
     }
