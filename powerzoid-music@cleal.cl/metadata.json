@@ -1,5 +1,5 @@
 {
-    "uuid": "spotify-now-playing@cleal.cl",
+    "uuid": "powerzoid-music@cleal.cl",
     "name": "PowerZoid Music",
     "description": "Shows the current track in the GNOME top bar. Spotify via MPRIS2/D-Bus, or stream Rainwave / RadioTunes directly (requires mpv).",
     "version": 2,

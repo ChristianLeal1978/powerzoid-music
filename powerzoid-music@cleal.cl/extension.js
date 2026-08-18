@@ -173,7 +173,7 @@ const RADIO_POLL_MS        = 5000;
 const HOVER_HIDE_DELAY_MS  = 150;
 
 const ART_CACHE_DIR = GLib.build_filenamev([
-    GLib.get_user_cache_dir(), 'spotify-now-playing-gnome'
+    GLib.get_user_cache_dir(), 'powerzoid-music'
 ]);
 
 export default class PowerZoidMusicExtension {
@@ -848,7 +848,7 @@ export default class PowerZoidMusicExtension {
 
     _settingsPath() {
         return GLib.build_filenamev([
-            GLib.get_user_config_dir(), 'spotify-now-playing-gnome', 'settings.json'
+            GLib.get_user_config_dir(), 'powerzoid-music', 'settings.json'
         ]);
     }
 

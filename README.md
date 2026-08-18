@@ -64,7 +64,7 @@ sudo dnf install mpv
 
 ```bash
 # Descomprimir en el directorio de extensiones
-unzip spotify-now-playing-gnome.zip \
+unzip powerzoid-music.zip \
   -d ~/.local/share/gnome-shell/extensions/
 
 # Cerrar sesión y volver a entrar (necesario en Wayland)
@@ -74,41 +74,39 @@ gnome-session-quit --logout
 Al iniciar sesión de nuevo:
 
 ```bash
-gnome-extensions enable spotify-now-playing@cleal.cl
+gnome-extensions enable powerzoid-music@cleal.cl
 ```
 
 ### Instalación desde el repositorio
 
 ```bash
-git clone https://github.com/ChristianLeal1978/spotify-now-playing-gnome.git
-cd spotify-now-playing-gnome
+git clone https://github.com/ChristianLeal1978/powerzoid-music.git
+cd powerzoid-music
 
 # Copiar la extensión
-cp -r spotify-now-playing@cleal.cl \
+cp -r powerzoid-music@cleal.cl \
   ~/.local/share/gnome-shell/extensions/
 
 # Cerrar sesión y volver a entrar, luego:
-gnome-extensions enable spotify-now-playing@cleal.cl
+gnome-extensions enable powerzoid-music@cleal.cl
 ```
 
 ## Actualizar una instalación existente
 
 ```bash
 # Sobreescribir solo los archivos cambiados
-cp -r spotify-now-playing@cleal.cl \
+cp -r powerzoid-music@cleal.cl \
   ~/.local/share/gnome-shell/extensions/
 
 # Cerrar sesión y volver a entrar
 gnome-session-quit --logout
 ```
 
-> El identificador interno (`spotify-now-playing@cleal.cl`) no cambió al renombrar la extensión a "PowerZoid Music" — es solo el nombre visible en el panel y en Extensiones. Una actualización no requiere desinstalar ni volver a habilitarla manualmente (más allá de cerrar sesión para recargar el código).
-
 ## Desinstalar
 
 ```bash
-gnome-extensions disable spotify-now-playing@cleal.cl
-rm -rf ~/.local/share/gnome-shell/extensions/spotify-now-playing@cleal.cl
+gnome-extensions disable powerzoid-music@cleal.cl
+rm -rf ~/.local/share/gnome-shell/extensions/powerzoid-music@cleal.cl
 ```
 
 ## Uso
@@ -133,7 +131,7 @@ El texto se trunca automáticamente a 50 caracteres si es muy largo.
 ## Estructura del proyecto
 
 ```
-spotify-now-playing@cleal.cl/
+powerzoid-music@cleal.cl/
 ├── metadata.json   # UUID, nombre, versiones de GNOME Shell compatibles
 ├── extension.js    # Lógica completa: proxy D-Bus, UI, selector de fuente, controles
 └── mpvPlayer.js     # Subproceso mpv + control IPC para Rainwave/RadioTunes
