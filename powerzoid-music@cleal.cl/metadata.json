@@ -1,7 +1,7 @@
 {
     "uuid": "powerzoid-music@cleal.cl",
     "name": "PowerZoid Music",
-    "description": "Shows the current track in the GNOME top bar. Spotify via MPRIS2/D-Bus, or stream Rainwave / RadioTunes directly (requires mpv).",
+    "description": "Shows the current track in the GNOME top bar. Spotify or Purrr via MPRIS2/D-Bus, or stream Rainwave / RadioTunes directly (requires mpv).",
     "version": 2,
     "shell-version": ["45", "46", "47", "48", "49", "50"],
     "url": ""

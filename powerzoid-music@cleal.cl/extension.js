@@ -3,17 +3,18 @@
  *
  * Layout de la barra:  [ ♫/📻  Texto de la fuente activa ]
  *
- * Click izquierdo en texto   → Spotify: siguiente pista · Rainwave: siguiente
- *                               estación · RadioTunes: siguiente favorito
- * Click derecho en texto     → menú: Spotify / Rainwave / RadioTunes
+ * Click izquierdo en texto   → Spotify/Purrr: siguiente pista · Rainwave:
+ *                               siguiente estación · RadioTunes: siguiente
+ *                               favorito
+ * Click derecho en texto     → menú: Spotify / Purrr / Rainwave / RadioTunes
  *                               (una queda marcada como activa), tamaño de letra
  * Hover sobre la extensión   → panel con carátula/ícono, título, artista
- *                               y progreso (Spotify) o estado en vivo (radio)
+ *                               y progreso (Spotify/Purrr) o estado en vivo (radio)
  * Click en la carátula       → alternar play/pausa (todas las fuentes)
  *
  * Fuentes soportadas:
- *  - Spotify: se observa vía MPRIS2/D-Bus (como antes), sin reproducir audio
- *    propio — Spotify ya lo hace.
+ *  - Spotify / Purrr: se observan vía MPRIS2/D-Bus, sin reproducir audio
+ *    propio — cada app ya lo hace por su cuenta.
  *  - Rainwave / RadioTunes: no hay un reproductor de escritorio con MPRIS,
  *    así que la extensión lanza `mpv` como subproceso y lo controla por su
  *    socket IPC (play/stop y lectura de metadata ICY). Requiere mpv
@@ -34,10 +35,22 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import { MpvPlayer } from './mpvPlayer.js';
 
 const SPOTIFY_BUS_NAME    = 'org.mpris.MediaPlayer2.spotify';
+const PURRR_BUS_NAME      = 'org.mpris.MediaPlayer2.purrr';
 const MPRIS_OBJECT_PATH   = '/org/mpris/MediaPlayer2';
 const MPRIS_PLAYER_IFACE  = 'org.mpris.MediaPlayer2.Player';
 
-const SOURCE = { SPOTIFY: 'spotify', RAINWAVE: 'rainwave', RADIOTUNES: 'radiotunes' };
+const SOURCE = { SPOTIFY: 'spotify', PURRR: 'purrr', RAINWAVE: 'rainwave', RADIOTUNES: 'radiotunes' };
+
+// Fuentes que son reproductores de escritorio locales hablando MPRIS2 por
+// D-Bus (a diferencia de Rainwave/RadioTunes, que son streams manejados con
+// mpv). Spotify y Purrr comparten exactamente el mismo trato: la extensión
+// solo vigila/observa la que esté activa, nunca dos a la vez — igual que
+// antes con Spotify, así que basta un único proxy D-Bus compartido
+// parametrizado por la fuente activa en vez de duplicar el estado.
+const MPRIS_SOURCES = {
+    [SOURCE.SPOTIFY]: { busName: SPOTIFY_BUS_NAME, label: 'Spotify' },
+    [SOURCE.PURRR]:   { busName: PURRR_BUS_NAME,   label: 'Purrr' },
+};
 
 const RAINWAVE_API_URL = 'https://rainwave.cc/api4/info';
 
@@ -200,6 +213,7 @@ export default class PowerZoidMusicExtension {
 
         // Ítems del menú de selección de fuente
         this._spotifyMenuItem              = null;
+        this._purrrMenuItem                = null;
         this._rainwaveSubMenuItem          = null;
         this._rainwaveStationItems         = new Map();
         this._radiotunesSubMenuItem        = null;
@@ -246,7 +260,7 @@ export default class PowerZoidMusicExtension {
         this._songLabel.connect('button-press-event', (_actor, event) => {
             const button = event.get_button();
             if (button === 1) {
-                if (this._source === SOURCE.SPOTIFY)
+                if (this._isMprisSource(this._source))
                     this._callMpris('Next');
                 else if (this._source === SOURCE.RAINWAVE)
                     this._cycleRainwaveStation();
@@ -320,6 +334,7 @@ export default class PowerZoidMusicExtension {
         this._popupProgressTrack             = null;
         this._popupProgressFill              = null;
         this._spotifyMenuItem                = null;
+        this._purrrMenuItem                  = null;
         this._rainwaveSubMenuItem            = null;
         this._rainwaveStationItems.clear();
         this._radiotunesSubMenuItem          = null;
@@ -336,32 +351,45 @@ export default class PowerZoidMusicExtension {
 
     _applyInitialSource() {
         this._refreshSourceOrnaments();
-        if (this._source === SOURCE.SPOTIFY)
+        if (this._isMprisSource(this._source))
             this._startWatching();
         else
             this._songLabel.set_text(this._radioIdleLabel());
     }
 
+    // Fuentes MPRIS2 de escritorio (Spotify, Purrr): reproductores externos
+    // que la extensión solo observa por D-Bus, nunca reproduce ella misma.
+    _isMprisSource(source) {
+        return Object.prototype.hasOwnProperty.call(MPRIS_SOURCES, source);
+    }
+
+    _mprisSourceInfo(source) {
+        return MPRIS_SOURCES[source] ?? null;
+    }
+
     // Libera lo que la fuente actual estuviera usando antes de pasar a otra:
-    // Spotify es una app externa que sigue sonando aunque dejemos de
-    // observarla por D-Bus, así que hay que pausarla explícitamente para
-    // que no se solape con la radio. Rainwave/RadioTunes comparten el mismo
+    // Spotify/Purrr son apps externas que siguen sonando aunque dejemos de
+    // observarlas por D-Bus, así que hay que pausarlas explícitamente para
+    // que no se solapen con la radio. Rainwave/RadioTunes comparten el mismo
     // mpv, que siempre se detiene antes de arrancar un stream nuevo.
     _leaveCurrentSource() {
-        if (this._source === SOURCE.SPOTIFY) {
-            this._pauseSpotify();
+        if (this._isMprisSource(this._source)) {
+            this._pauseMprisSource(this._source);
             this._stopWatching();
         } else {
             this._stopRadioPlayback();
         }
     }
 
-    // Llamada directa al bus de Spotify por su nombre conocido, sin depender
-    // de this._proxy: si el proxy aún no está listo (o quedó obsoleto tras
-    // un blip de D-Bus), _callMpris('Pause') no hace nada y no deja rastro.
-    _pauseSpotify() {
+    // Llamada directa al bus de la fuente MPRIS por su nombre conocido, sin
+    // depender de this._proxy: si el proxy aún no está listo (o quedó
+    // obsoleto tras un blip de D-Bus), _callMpris('Pause') no hace nada y no
+    // deja rastro.
+    _pauseMprisSource(source) {
+        const info = this._mprisSourceInfo(source);
+        if (!info) return;
         Gio.DBus.session.call(
-            SPOTIFY_BUS_NAME,
+            info.busName,
             MPRIS_OBJECT_PATH,
             MPRIS_PLAYER_IFACE,
             'Pause',
@@ -372,19 +400,27 @@ export default class PowerZoidMusicExtension {
             null,
             (connection, result) => {
                 try { connection.call_finish(result); }
-                catch (e) { console.error(`[powerzoid-music] Pause Spotify failed: ${e.message}`); }
+                catch (e) { console.error(`[powerzoid-music] Pause ${info.label} failed: ${e.message}`); }
             }
         );
     }
 
-    _switchToSpotify() {
-        if (this._source === SOURCE.SPOTIFY) return;
+    _switchToMprisSource(source) {
+        if (this._source === source) return;
         this._leaveCurrentSource();
-        this._source = SOURCE.SPOTIFY;
+        this._source = source;
         this._saveSettings();
         this._refreshSourceOrnaments();
         this._songLabel.set_text(IDLE_TEXT);
         this._startWatching();
+    }
+
+    _switchToSpotify() {
+        this._switchToMprisSource(SOURCE.SPOTIFY);
+    }
+
+    _switchToPurrr() {
+        this._switchToMprisSource(SOURCE.PURRR);
     }
 
     _selectRainwaveStation(id) {
@@ -455,6 +491,9 @@ export default class PowerZoidMusicExtension {
         this._spotifyMenuItem?.setOrnament(
             this._source === SOURCE.SPOTIFY ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE
         );
+        this._purrrMenuItem?.setOrnament(
+            this._source === SOURCE.PURRR ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE
+        );
 
         this._rainwaveSubMenuItem?.setOrnament(
             this._source === SOURCE.RAINWAVE ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE
@@ -507,7 +546,7 @@ export default class PowerZoidMusicExtension {
     }
 
     _toggleRadioPlayback() {
-        if (this._source === SOURCE.SPOTIFY) return;
+        if (this._isMprisSource(this._source)) return;
         if (this._mpvPlayer?.isPlaying) {
             this._stopRadioPlayback();
             this._songLabel.set_text(this._radioIdleLabel());
@@ -533,7 +572,7 @@ export default class PowerZoidMusicExtension {
         this._stopRadioPoll();
         this._radioMediaTitle = null;
         this._radioArtist = null;
-        if (this._source !== SOURCE.SPOTIFY) {
+        if (!this._isMprisSource(this._source)) {
             this._songLabel?.set_text(this._radioIdleLabel());
             this._updateRadioPopupContent();
         }
@@ -579,7 +618,7 @@ export default class PowerZoidMusicExtension {
     }
 
     _applyRadioNowPlaying() {
-        if (this._source === SOURCE.SPOTIFY) return;
+        if (this._isMprisSource(this._source)) return;
         const label = this._radioArtist
             ? `${this._radioArtist} – ${this._radioMediaTitle}`
             : this._radioMediaTitle;
@@ -696,6 +735,10 @@ export default class PowerZoidMusicExtension {
         this._spotifyMenuItem = new PopupMenu.PopupMenuItem('Spotify');
         this._spotifyMenuItem.connect('activate', () => this._switchToSpotify());
         this._indicator.menu.addMenuItem(this._spotifyMenuItem);
+
+        this._purrrMenuItem = new PopupMenu.PopupMenuItem('Purrr');
+        this._purrrMenuItem.connect('activate', () => this._switchToPurrr());
+        this._indicator.menu.addMenuItem(this._purrrMenuItem);
 
         this._rainwaveSubMenuItem = new PopupMenu.PopupSubMenuMenuItem('Rainwave');
         this._indicator.menu.addMenuItem(this._rainwaveSubMenuItem);
@@ -897,15 +940,27 @@ export default class PowerZoidMusicExtension {
         }
     }
 
-    // ─── D-Bus / MPRIS (Spotify) ───────────────────────────────────────────────
+    // ─── D-Bus / MPRIS (Spotify / Purrr) ───────────────────────────────────────
+    //
+    // Ambas fuentes hablan exactamente el mismo protocolo MPRIS2, así que
+    // comparten esta implementación parametrizada por `this._source`. Solo
+    // se vigila/observa una fuente MPRIS a la vez (igual que antes con
+    // Spotify únicamente): al cambiar de fuente, _leaveCurrentSource()
+    // detiene la vigilancia de la anterior antes de que _startWatching()
+    // arranque la nueva, así que un único this._proxy compartido basta —
+    // nunca hay dos proxies MPRIS activos al mismo tiempo.
 
     _startWatching() {
+        const info = this._mprisSourceInfo(this._source);
+        if (!info) return;
+        const watchedSource = this._source;
         this._watcherId = Gio.bus_watch_name(
             Gio.BusType.SESSION,
-            SPOTIFY_BUS_NAME,
+            info.busName,
             Gio.BusNameWatcherFlags.NONE,
-            this._onSpotifyAppeared.bind(this),
-            this._onSpotifyVanished.bind(this)
+            (connection, name, nameOwner) =>
+                this._onMprisAppeared(watchedSource, info, connection, name, nameOwner),
+            this._onMprisVanished.bind(this)
         );
     }
 
@@ -917,12 +972,12 @@ export default class PowerZoidMusicExtension {
         }
     }
 
-    _onSpotifyAppeared(_connection, _name, _nameOwner) {
+    _onMprisAppeared(watchedSource, info, _connection, _name, _nameOwner) {
         Gio.DBusProxy.new(
             Gio.DBus.session,
             Gio.DBusProxyFlags.NONE,
             null,
-            SPOTIFY_BUS_NAME,
+            info.busName,
             MPRIS_OBJECT_PATH,
             MPRIS_PLAYER_IFACE,
             null,
@@ -930,7 +985,7 @@ export default class PowerZoidMusicExtension {
                 try {
                     const proxy = Gio.DBusProxy.new_finish(result);
                     // El usuario pudo cambiar de fuente mientras se conectaba
-                    if (this._source !== SOURCE.SPOTIFY) return;
+                    if (this._source !== watchedSource) return;
                     this._proxy = proxy;
                     this._propertiesChangedId = this._proxy.connect(
                         'g-properties-changed',
@@ -938,13 +993,13 @@ export default class PowerZoidMusicExtension {
                     );
                     this._updateDisplay();
                 } catch (e) {
-                    console.error(`[powerzoid-music] Proxy init failed: ${e.message}`);
+                    console.error(`[powerzoid-music] Proxy init failed (${info.label}): ${e.message}`);
                 }
             }
         );
     }
 
-    _onSpotifyVanished(_connection, _name) {
+    _onMprisVanished(_connection, _name) {
         this._destroyProxy();
         this._songLabel?.set_text(IDLE_TEXT);
         this._hideHoverPopup();
@@ -1056,7 +1111,7 @@ export default class PowerZoidMusicExtension {
         });
         this._popupCoverIcon.connect('button-press-event', (_actor, event) => {
             if (event.get_button() === 1) {
-                if (this._source === SOURCE.SPOTIFY)
+                if (this._isMprisSource(this._source))
                     this._callMpris('PlayPause');
                 else
                     this._toggleRadioPlayback();
@@ -1113,7 +1168,7 @@ export default class PowerZoidMusicExtension {
 
     _onIndicatorEnter() {
         this._cancelHidePopup();
-        if (this._source === SOURCE.SPOTIFY && !this._proxy) return;
+        if (this._isMprisSource(this._source) && !this._proxy) return;
         this._showHoverPopup();
     }
 
@@ -1123,12 +1178,12 @@ export default class PowerZoidMusicExtension {
 
     _showHoverPopup() {
         if (!this._popup) return;
-        if (this._source === SOURCE.SPOTIFY && !this._proxy) return;
+        if (this._isMprisSource(this._source) && !this._proxy) return;
 
         this._positionPopup();
         this._popup.show();
 
-        if (this._source === SOURCE.SPOTIFY) {
+        if (this._isMprisSource(this._source)) {
             this._refreshPosition();
             if (this._progressTimeoutId === null) {
                 this._progressTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PROGRESS_UPDATE_MS, () => {
@@ -1187,8 +1242,10 @@ export default class PowerZoidMusicExtension {
     // 'Position' de las señales PropertiesChanged por cambiar continuamente.
     _refreshPosition() {
         if (!this._proxy) return;
+        const info = this._mprisSourceInfo(this._source);
+        if (!info) return;
         this._proxy.get_connection().call(
-            SPOTIFY_BUS_NAME,
+            info.busName,
             MPRIS_OBJECT_PATH,
             'org.freedesktop.DBus.Properties',
             'Get',

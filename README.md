@@ -1,8 +1,9 @@
 # PowerZoid Music — GNOME Shell Extension
 
-Extensión para GNOME Shell que muestra en la barra superior lo que se está reproduciendo, con controles integrados. Las tres fuentes aparecen siempre a la vez en el menú (click derecho) y una queda marcada como activa:
+Extensión para GNOME Shell que muestra en la barra superior lo que se está reproduciendo, con controles integrados. Las cuatro fuentes aparecen siempre a la vez en el menú (click derecho) y una queda marcada como activa:
 
 - **Spotify** — observado vía MPRIS2/D-Bus, igual que siempre.
+- **Purrr** — reproductor propio de música cacheada desde Google Drive, también observado vía MPRIS2/D-Bus, exactamente igual que Spotify.
 - **Rainwave** — streaming directo de la radio comunitaria de música de videojuegos (6 estaciones).
 - **RadioTunes** — streaming directo con tu cuenta premium (con tu `listen_key`), con submenús de canales favoritos y del catálogo completo (~99 canales).
 
@@ -14,14 +15,14 @@ Extensión para GNOME Shell que muestra en la barra superior lo que se está rep
 
 ## Características
 
-- **Las tres fuentes visibles a la vez** en el menú (click derecho), con un ✓ marcando la activa
+- **Las cuatro fuentes visibles a la vez** en el menú (click derecho), con un ✓ marcando la activa
 - **Rainwave**: submenú con sus 6 estaciones (All, Game, Chiptune, OC ReMix, Covers, Chill)
 - **RadioTunes**: campo para tu `listen_key`, botón para marcar/quitar el canal actual de favoritos, submenú **Favoritos** y submenú **Todos los canales** (~99 disponibles)
-- **Artista y título** de la canción actual en tiempo real (Spotify vía MPRIS; Rainwave/RadioTunes vía metadata ICY del stream)
-- **Click en el texto** → Spotify: siguiente pista · Rainwave: siguiente estación · RadioTunes: siguiente favorito
+- **Artista y título** de la canción actual en tiempo real (Spotify/Purrr vía MPRIS; Rainwave/RadioTunes vía metadata ICY del stream)
+- **Click en el texto** → Spotify/Purrr: siguiente pista · Rainwave: siguiente estación · RadioTunes: siguiente favorito
 - **Click en la carátula/ícono** → alterna play/pausa en cualquier fuente
-- **Actualización instantánea** vía señales D-Bus en Spotify (sin polling); sondeo liviano cada 5 s en modo radio
-- Aparece solo cuando hay algo que mostrar; en Spotify desaparece automáticamente al cerrarlo
+- **Actualización instantánea** vía señales D-Bus en Spotify/Purrr (sin polling); sondeo liviano cada 5 s en modo radio
+- Aparece solo cuando hay algo que mostrar; en Spotify/Purrr desaparece automáticamente al cerrar la app
 
 ## Cómo funciona
 
@@ -36,6 +37,10 @@ Spotify en Linux implementa el estándar **MPRIS2** (`org.mpris.MediaPlayer2`) s
 5. Llama a `Next` o `PlayPause` según el control pulsado
 
 No se necesita ningún servidor local, userscript ni servicio systemd.
+
+### Purrr
+
+Purrr es un reproductor de música propio (GTK4/libadwaita, para Fedora) que reproduce MP3/FLAC cacheados desde Google Drive. Purrr expone un servidor **MPRIS2** (`org.mpris.MediaPlayer2.purrr`) — el mismo protocolo estándar que usa Spotify — así que la extensión lo trata exactamente igual, con el mismo código: vigila el bus, crea el proxy, se suscribe a `PropertiesChanged` y lee `xesam:title`/`xesam:artist`/`mpris:artUrl` del `Metadata`. No hace falta ninguna integración especial: cualquier reproductor que hable MPRIS2 correctamente (como Purrr) funciona con la extensión sin cambios adicionales.
 
 ### Rainwave y RadioTunes
 
@@ -58,6 +63,7 @@ sudo dnf install mpv
 
 - Fedora 44 (o cualquier distro con GNOME Shell 45–50)
 - Spotify instalado (versión de escritorio para Linux) — solo si usas esa fuente
+- Purrr instalado y corriendo — solo si usas esa fuente
 - `mpv` instalado — solo si usas Rainwave o RadioTunes
 
 ## Instalación
@@ -113,8 +119,8 @@ rm -rf ~/.local/share/gnome-shell/extensions/powerzoid-music@cleal.cl
 
 | Acción | Resultado |
 |--------|-----------|
-| Click derecho | Abre el menú: Spotify / Rainwave (6 estaciones) / RadioTunes (listen_key, favoritos, todos los canales), tamaño de letra |
-| Click en el texto de la barra | Spotify: siguiente pista · Rainwave: siguiente estación · RadioTunes: siguiente favorito |
+| Click derecho | Abre el menú: Spotify / Purrr / Rainwave (6 estaciones) / RadioTunes (listen_key, favoritos, todos los canales), tamaño de letra |
+| Click en el texto de la barra | Spotify/Purrr: siguiente pista · Rainwave: siguiente estación · RadioTunes: siguiente favorito |
 | Click en la carátula/ícono del popup | Alterna play/pausa (todas las fuentes) |
 | ☆/★ dentro del submenú RadioTunes | Añade o quita de favoritos el canal actualmente activo |
 
