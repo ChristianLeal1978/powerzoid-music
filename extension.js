@@ -781,6 +781,19 @@ export default class PowerZoidMusicExtension {
             this._saveSettings();
         });
         this._indicator.menu.addMenuItem(resetItem);
+
+        this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        const hideItem = new PopupMenu.PopupMenuItem('🙈  Ocultar esta sesión');
+        hideItem.connect('activate', () => this._hideForSession());
+        this._indicator.menu.addMenuItem(hideItem);
+    }
+
+    // Oculta el indicador solo en memoria (sin tocar la config en disco):
+    // vuelve a aparecer normalmente en el próximo inicio de sesión.
+    _hideForSession() {
+        this._indicator.menu.close();
+        this._indicator.hide();
     }
 
     // RadioTunes no tiene una lista fija de canales pública: el usuario pega
