@@ -1075,9 +1075,15 @@ export default class PowerZoidMusicExtension {
             const metadata  = metadataVariant.recursiveUnpack();
             const title     = metadata['xesam:title'] ?? '–';
             const artistRaw = metadata['xesam:artist'];
-            const artist    = Array.isArray(artistRaw)
+            let artist      = Array.isArray(artistRaw)
                 ? artistRaw.join(', ')
-                : (artistRaw ?? '–');
+                : (artistRaw ?? '');
+            // Purrr ahora reproduce radios (SmoothJazz.com, RadioTunes, Rainwave, etc.)
+            // además de Drive/Spotify; cuando una señal no anuncia artista propio, cae
+            // en xesam:album, que Purrr llena con el nombre de la estación — así el
+            // panel sigue identificando la fuente en vez de mostrar un espacio vacío.
+            if (!artist)
+                artist = metadata['xesam:album'] ?? '–';
 
             let text = `♫  ${artist} – ${title}`;
             if (text.length > MAX_TEXT_LENGTH)
