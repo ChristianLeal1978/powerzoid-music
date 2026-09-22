@@ -1,8 +1,8 @@
 /**
  * MpvPlayer — controla mpv como subproceso para reproducir streams de
- * radio (Rainwave / RadioTunes). GNOME Shell no tiene motor de audio propio,
- * así que delegamos la decodificación a un proceso externo en vez de
- * embeber GStreamer dentro del compositor.
+ * radio (Rainwave / SmoothJazz / RadioTunes). GNOME Shell no tiene motor de
+ * audio propio, así que delegamos la decodificación a un proceso externo en
+ * vez de embeber GStreamer dentro del compositor.
  */
 
 import GLib from 'gi://GLib';

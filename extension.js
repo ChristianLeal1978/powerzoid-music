@@ -4,10 +4,11 @@
  * Layout de la barra:  [ ♫/📻  Texto de la fuente activa ]
  *
  * Click izquierdo en texto   → Spotify/Purrr: siguiente pista · Rainwave:
- *                               siguiente estación · RadioTunes: siguiente
- *                               favorito
- * Click derecho en texto     → menú: Spotify / Purrr / Rainwave / RadioTunes
- *                               (una queda marcada como activa), tamaño de letra
+ *                               siguiente estación · SmoothJazz: siguiente
+ *                               señal · RadioTunes: siguiente favorito
+ * Click derecho en texto     → menú: Spotify / Purrr / Rainwave / SmoothJazz /
+ *                               RadioTunes (una queda marcada como activa),
+ *                               tamaño de letra
  * Hover sobre la extensión   → panel con carátula/ícono, título, artista
  *                               y progreso (Spotify/Purrr) o estado en vivo (radio)
  * Click en la carátula       → alternar play/pausa (todas las fuentes)
@@ -15,14 +16,17 @@
  * Fuentes soportadas:
  *  - Spotify / Purrr: se observan vía MPRIS2/D-Bus, sin reproducir audio
  *    propio — cada app ya lo hace por su cuenta.
- *  - Rainwave / RadioTunes: no hay un reproductor de escritorio con MPRIS,
- *    así que la extensión lanza `mpv` como subproceso y lo controla por su
- *    socket IPC (play/stop y lectura de metadata ICY). Requiere mpv
- *    instalado (`sudo dnf install mpv`).
+ *  - Rainwave / SmoothJazz / RadioTunes: no hay un reproductor de escritorio
+ *    con MPRIS, así que la extensión lanza `mpv` como subproceso y lo
+ *    controla por su socket IPC (play/stop y lectura de metadata ICY).
+ *    Requiere mpv instalado (`sudo dnf install mpv`).
  *  - Rainwave y RadioTunes exponen además una API pública propia (api4/info
  *    y track_history respectivamente) con título, artista y carátula de la
  *    canción actual, más precisa que el StreamTitle ICY genérico — se
- *    consulta aparte y se usa en su lugar.
+ *    consulta aparte y se usa en su lugar. SmoothJazz.com no tiene una API
+ *    así (es un servicio propio, no AudioAddict como RadioTunes), así que se
+ *    queda con el StreamTitle ICY genérico que lee mpv, igual que cualquier
+ *    fuente sin integración dedicada.
  */
 
 import GLib from 'gi://GLib';
@@ -39,13 +43,16 @@ const PURRR_BUS_NAME      = 'org.mpris.MediaPlayer2.purrr';
 const MPRIS_OBJECT_PATH   = '/org/mpris/MediaPlayer2';
 const MPRIS_PLAYER_IFACE  = 'org.mpris.MediaPlayer2.Player';
 
-const SOURCE = { SPOTIFY: 'spotify', PURRR: 'purrr', RAINWAVE: 'rainwave', RADIOTUNES: 'radiotunes' };
+const SOURCE = {
+    SPOTIFY: 'spotify', PURRR: 'purrr', RAINWAVE: 'rainwave',
+    SMOOTHJAZZ: 'smoothjazz', RADIOTUNES: 'radiotunes',
+};
 
 // Fuentes que son reproductores de escritorio locales hablando MPRIS2 por
-// D-Bus (a diferencia de Rainwave/RadioTunes, que son streams manejados con
-// mpv). Spotify y Purrr comparten exactamente el mismo trato: la extensión
-// solo vigila/observa la que esté activa, nunca dos a la vez — igual que
-// antes con Spotify, así que basta un único proxy D-Bus compartido
+// D-Bus (a diferencia de Rainwave/SmoothJazz/RadioTunes, que son streams
+// manejados con mpv). Spotify y Purrr comparten exactamente el mismo trato: la
+// extensión solo vigila/observa la que esté activa, nunca dos a la vez —
+// igual que antes con Spotify, así que basta un único proxy D-Bus compartido
 // parametrizado por la fuente activa en vez de duplicar el estado.
 const MPRIS_SOURCES = {
     [SOURCE.SPOTIFY]: { busName: SPOTIFY_BUS_NAME, label: 'Spotify' },
@@ -65,6 +72,17 @@ const RAINWAVE_STATIONS = [
     { id: 2, name: 'OC ReMix', url: 'https://rainwave.cc/tune_in/2.mp3.m3u' },
     { id: 3, name: 'Covers',   url: 'https://rainwave.cc/tune_in/3.mp3.m3u' },
     { id: 6, name: 'Chill',    url: 'https://rainwave.cc/tune_in/6.mp3.m3u' },
+];
+
+// SmoothJazz.com y su señal hermana SmoothLounge.com. A diferencia de
+// RadioTunes, no es AudioAddict — es un servicio propio, sin cuenta ni
+// listen_key: streams públicos directos en smoothjazz.cdnstream1.com,
+// confirmados leyendo smoothjazz.com/help y probando con curl (Content-Type
+// audio/mpeg, icy-name correcto para cada uno). Mismo patrón que Rainwave:
+// URLs fijas, sin catálogo dinámico.
+const SMOOTHJAZZ_STATIONS = [
+    { id: 2585, name: 'SmoothJazz.com',   url: 'http://smoothjazz.cdnstream1.com/2585_320.mp3' },
+    { id: 2586, name: 'SmoothLounge.com', url: 'http://smoothjazz.cdnstream1.com/2586_320.mp3' },
 ];
 
 // Catálogo de canales premium de RadioTunes (http://listen.radiotunes.com/premium_high.json).
@@ -203,6 +221,7 @@ export default class PowerZoidMusicExtension {
         // Fuente activa
         this._source               = SOURCE.SPOTIFY;
         this._rainwaveStationId    = RAINWAVE_STATIONS[0].id;
+        this._smoothjazzStationId  = SMOOTHJAZZ_STATIONS[0].id;
         this._radiotunesListenKey  = '';
         this._radiotunesActiveSlug = null;
         this._radiotunesFavorites  = [];
@@ -216,6 +235,8 @@ export default class PowerZoidMusicExtension {
         this._purrrMenuItem                = null;
         this._rainwaveSubMenuItem          = null;
         this._rainwaveStationItems         = new Map();
+        this._smoothjazzSubMenuItem        = null;
+        this._smoothjazzStationItems       = new Map();
         this._radiotunesSubMenuItem        = null;
         this._radiotunesEntryItem          = null;
         this._radiotunesEntry              = null;
@@ -264,6 +285,8 @@ export default class PowerZoidMusicExtension {
                     this._callMpris('Next');
                 else if (this._source === SOURCE.RAINWAVE)
                     this._cycleRainwaveStation();
+                else if (this._source === SOURCE.SMOOTHJAZZ)
+                    this._cycleSmoothjazzStation();
                 else
                     this._cycleRadiotunesFavorite();
                 return Clutter.EVENT_STOP;
@@ -337,6 +360,8 @@ export default class PowerZoidMusicExtension {
         this._purrrMenuItem                  = null;
         this._rainwaveSubMenuItem            = null;
         this._rainwaveStationItems.clear();
+        this._smoothjazzSubMenuItem          = null;
+        this._smoothjazzStationItems.clear();
         this._radiotunesSubMenuItem          = null;
         this._radiotunesEntryItem            = null;
         this._radiotunesEntry                = null;
@@ -370,8 +395,8 @@ export default class PowerZoidMusicExtension {
     // Libera lo que la fuente actual estuviera usando antes de pasar a otra:
     // Spotify/Purrr son apps externas que siguen sonando aunque dejemos de
     // observarlas por D-Bus, así que hay que pausarlas explícitamente para
-    // que no se solapen con la radio. Rainwave/RadioTunes comparten el mismo
-    // mpv, que siempre se detiene antes de arrancar un stream nuevo.
+    // que no se solapen con la radio. Rainwave/SmoothJazz/RadioTunes comparten
+    // el mismo mpv, que siempre se detiene antes de arrancar un stream nuevo.
     _leaveCurrentSource() {
         if (this._isMprisSource(this._source)) {
             this._pauseMprisSource(this._source);
@@ -440,6 +465,23 @@ export default class PowerZoidMusicExtension {
         this._selectRainwaveStation(next.id);
     }
 
+    _selectSmoothjazzStation(id) {
+        const station = SMOOTHJAZZ_STATIONS.find(s => s.id === id);
+        if (!station) return;
+        this._leaveCurrentSource();
+        this._smoothjazzStationId = id;
+        this._source = SOURCE.SMOOTHJAZZ;
+        this._saveSettings();
+        this._refreshSourceOrnaments();
+        this._startRadioPlayback(station.url);
+    }
+
+    _cycleSmoothjazzStation() {
+        const idx = SMOOTHJAZZ_STATIONS.findIndex(s => s.id === this._smoothjazzStationId);
+        const next = SMOOTHJAZZ_STATIONS[(idx + 1) % SMOOTHJAZZ_STATIONS.length];
+        this._selectSmoothjazzStation(next.id);
+    }
+
     _selectRadiotunesChannel(slug) {
         const key = this._radiotunesEntry?.get_text().trim() ?? this._radiotunesListenKey;
         if (!key) {
@@ -483,6 +525,7 @@ export default class PowerZoidMusicExtension {
 
     _sourceLabel() {
         if (this._source === SOURCE.RAINWAVE) return 'Rainwave';
+        if (this._source === SOURCE.SMOOTHJAZZ) return 'SmoothJazz';
         if (this._source === SOURCE.RADIOTUNES) return 'RadioTunes';
         return 'Spotify';
     }
@@ -501,6 +544,16 @@ export default class PowerZoidMusicExtension {
         for (const [id, item] of this._rainwaveStationItems) {
             item.setOrnament(
                 this._source === SOURCE.RAINWAVE && id === this._rainwaveStationId
+                    ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE
+            );
+        }
+
+        this._smoothjazzSubMenuItem?.setOrnament(
+            this._source === SOURCE.SMOOTHJAZZ ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE
+        );
+        for (const [id, item] of this._smoothjazzStationItems) {
+            item.setOrnament(
+                this._source === SOURCE.SMOOTHJAZZ && id === this._smoothjazzStationId
                     ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE
             );
         }
@@ -527,7 +580,7 @@ export default class PowerZoidMusicExtension {
         );
     }
 
-    // ─── Reproducción de radio (Rainwave / RadioTunes vía mpv) ────────────────
+    // ─── Reproducción de radio (Rainwave / SmoothJazz / RadioTunes vía mpv) ───
 
     _startRadioPlayback(url) {
         this._radioMediaTitle = null;
@@ -556,6 +609,9 @@ export default class PowerZoidMusicExtension {
         let url = null;
         if (this._source === SOURCE.RAINWAVE) {
             const station = RAINWAVE_STATIONS.find(s => s.id === this._rainwaveStationId);
+            url = station?.url ?? null;
+        } else if (this._source === SOURCE.SMOOTHJAZZ) {
+            const station = SMOOTHJAZZ_STATIONS.find(s => s.id === this._smoothjazzStationId);
             url = station?.url ?? null;
         } else if (this._source === SOURCE.RADIOTUNES && this._radiotunesActiveSlug) {
             url = this._radiotunesStreamUrl(this._radiotunesActiveSlug);
@@ -722,6 +778,10 @@ export default class PowerZoidMusicExtension {
             const station = RAINWAVE_STATIONS.find(s => s.id === this._rainwaveStationId);
             return `📻  Rainwave: ${station?.name ?? '?'}`;
         }
+        if (this._source === SOURCE.SMOOTHJAZZ) {
+            const station = SMOOTHJAZZ_STATIONS.find(s => s.id === this._smoothjazzStationId);
+            return `📻  ${station?.name ?? 'SmoothJazz'}`;
+        }
         if (this._source === SOURCE.RADIOTUNES) {
             const channel = RADIOTUNES_CHANNELS.find(c => c.slug === this._radiotunesActiveSlug);
             return channel ? `📻  RadioTunes: ${channel.name}` : '📻  RadioTunes';
@@ -747,6 +807,15 @@ export default class PowerZoidMusicExtension {
             item.connect('activate', () => this._selectRainwaveStation(station.id));
             this._rainwaveSubMenuItem.menu.addMenuItem(item);
             this._rainwaveStationItems.set(station.id, item);
+        }
+
+        this._smoothjazzSubMenuItem = new PopupMenu.PopupSubMenuMenuItem('SmoothJazz');
+        this._indicator.menu.addMenuItem(this._smoothjazzSubMenuItem);
+        for (const station of SMOOTHJAZZ_STATIONS) {
+            const item = new PopupMenu.PopupMenuItem(station.name);
+            item.connect('activate', () => this._selectSmoothjazzStation(station.id));
+            this._smoothjazzSubMenuItem.menu.addMenuItem(item);
+            this._smoothjazzStationItems.set(station.id, item);
         }
 
         this._radiotunesSubMenuItem = new PopupMenu.PopupSubMenuMenuItem('RadioTunes');
@@ -918,6 +987,8 @@ export default class PowerZoidMusicExtension {
                 this._source = Object.values(SOURCE).includes(data.source) ? data.source : SOURCE.SPOTIFY;
                 this._rainwaveStationId = RAINWAVE_STATIONS.some(s => s.id === data.rainwaveStationId)
                     ? data.rainwaveStationId : RAINWAVE_STATIONS[0].id;
+                this._smoothjazzStationId = SMOOTHJAZZ_STATIONS.some(s => s.id === data.smoothjazzStationId)
+                    ? data.smoothjazzStationId : SMOOTHJAZZ_STATIONS[0].id;
                 this._radiotunesListenKey = typeof data.radiotunesListenKey === 'string'
                     ? data.radiotunesListenKey : '';
                 this._radiotunesActiveSlug = typeof data.radiotunesActiveSlug === 'string'
@@ -939,6 +1010,7 @@ export default class PowerZoidMusicExtension {
                 fontSize: this._fontSize,
                 source: this._source,
                 rainwaveStationId: this._rainwaveStationId,
+                smoothjazzStationId: this._smoothjazzStationId,
                 radiotunesListenKey: this._radiotunesListenKey,
                 radiotunesActiveSlug: this._radiotunesActiveSlug,
                 radiotunesFavorites: this._radiotunesFavorites,
@@ -1303,6 +1375,8 @@ export default class PowerZoidMusicExtension {
     // Contenido del popup de hover cuando la fuente activa es una radio.
     // Rainwave y RadioTunes traen título/artista/carátula reales desde sus
     // respectivas APIs (ver _pollRainwaveNowPlaying / _pollRadiotunesNowPlaying).
+    // SmoothJazz no tiene una API así, así que se queda con el ícono genérico
+    // y el StreamTitle ICY que lee mpv (ver el `else` en _startRadioPoll).
     _updateRadioPopupContent() {
         if (!this._popup) return;
         const playing = this._mpvPlayer?.isPlaying ?? false;

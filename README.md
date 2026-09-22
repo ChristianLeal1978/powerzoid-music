@@ -1,25 +1,28 @@
 # PowerZoid Music — GNOME Shell Extension
 
-Extensión para GNOME Shell que muestra en la barra superior lo que se está reproduciendo, con controles integrados. Las cuatro fuentes aparecen siempre a la vez en el menú (click derecho) y una queda marcada como activa:
+Extensión para GNOME Shell que muestra en la barra superior lo que se está reproduciendo, con controles integrados. Las cinco fuentes aparecen siempre a la vez en el menú (click derecho) y una queda marcada como activa:
 
 - **Spotify** — observado vía MPRIS2/D-Bus, igual que siempre.
 - **Purrr** — reproductor propio de música cacheada desde Google Drive, también observado vía MPRIS2/D-Bus, exactamente igual que Spotify.
 - **Rainwave** — streaming directo de la radio comunitaria de música de videojuegos (6 estaciones).
+- **SmoothJazz** — streaming directo de SmoothJazz.com y su señal hermana SmoothLounge.com, sin cuenta ni key.
 - **RadioTunes** — streaming directo con tu cuenta premium (con tu `listen_key`), con submenús de canales favoritos y del catálogo completo (~99 canales).
 
 ```
 ♫  GameChops – Aryll's Theme
 📻  Rainwave: Game
+📻  SmoothJazz.com
 📻  RadioTunes: Chillout
 ```
 
 ## Características
 
-- **Las cuatro fuentes visibles a la vez** en el menú (click derecho), con un ✓ marcando la activa
+- **Las cinco fuentes visibles a la vez** en el menú (click derecho), con un ✓ marcando la activa
 - **Rainwave**: submenú con sus 6 estaciones (All, Game, Chiptune, OC ReMix, Covers, Chill)
+- **SmoothJazz**: submenú con sus 2 señales (SmoothJazz.com, SmoothLounge.com)
 - **RadioTunes**: campo para tu `listen_key`, botón para marcar/quitar el canal actual de favoritos, submenú **Favoritos** y submenú **Todos los canales** (~99 disponibles)
-- **Artista y título** de la canción actual en tiempo real (Spotify/Purrr vía MPRIS; Rainwave/RadioTunes vía metadata ICY del stream)
-- **Click en el texto** → Spotify/Purrr: siguiente pista · Rainwave: siguiente estación · RadioTunes: siguiente favorito
+- **Artista y título** de la canción actual en tiempo real (Spotify/Purrr vía MPRIS; Rainwave/RadioTunes vía su API pública; SmoothJazz vía metadata ICY del stream)
+- **Click en el texto** → Spotify/Purrr: siguiente pista · Rainwave: siguiente estación · SmoothJazz: siguiente señal · RadioTunes: siguiente favorito
 - **Click en la carátula/ícono** → alterna play/pausa en cualquier fuente
 - **Actualización instantánea** vía señales D-Bus en Spotify/Purrr (sin polling); sondeo liviano cada 5 s en modo radio
 - Aparece solo cuando hay algo que mostrar; en Spotify/Purrr desaparece automáticamente al cerrar la app
@@ -42,15 +45,16 @@ No se necesita ningún servidor local, userscript ni servicio systemd.
 
 Purrr es un reproductor de música propio (GTK4/libadwaita, para Fedora) que reproduce MP3/FLAC cacheados desde Google Drive. Purrr expone un servidor **MPRIS2** (`org.mpris.MediaPlayer2.purrr`) — el mismo protocolo estándar que usa Spotify — así que la extensión lo trata exactamente igual, con el mismo código: vigila el bus, crea el proxy, se suscribe a `PropertiesChanged` y lee `xesam:title`/`xesam:artist`/`mpris:artUrl` del `Metadata`. No hace falta ninguna integración especial: cualquier reproductor que hable MPRIS2 correctamente (como Purrr) funciona con la extensión sin cambios adicionales.
 
-### Rainwave y RadioTunes
+### Rainwave, SmoothJazz y RadioTunes
 
-GNOME Shell no tiene un motor de audio propio, así que para estas dos fuentes la extensión lanza **[mpv](https://mpv.io/)** como subproceso y lo controla mediante su socket IPC (play/stop y lectura de la metadata ICY del stream para mostrar artista/título). Es necesario tener mpv instalado:
+GNOME Shell no tiene un motor de audio propio, así que para estas fuentes la extensión lanza **[mpv](https://mpv.io/)** como subproceso y lo controla mediante su socket IPC (play/stop y lectura de la metadata ICY del stream para mostrar artista/título). Es necesario tener mpv instalado:
 
 ```bash
 sudo dnf install mpv
 ```
 
 - **Rainwave** usa 6 URLs públicas de sintonización de rainwave.cc (All, Game, Chiptune, OC ReMix, Covers, Chill), sin necesidad de cuenta ni API key.
+- **SmoothJazz** usa 2 URLs públicas de streaming directo de `smoothjazz.cdnstream1.com` (SmoothJazz.com y su señal hermana SmoothLounge.com), sin cuenta ni API key. A diferencia de Rainwave/RadioTunes no expone una API propia con título/artista/carátula, así que la extensión se queda con el StreamTitle ICY genérico que lee mpv.
 - **RadioTunes** no tiene una API pública documentada. Su cuenta premium sí ofrece, de forma oficial, un `listen_key` pensado para reproductores externos (VLC, Winamp, Sonos, etc.) — es lo mismo que usa la extensión, sin necesidad de guardar tu usuario/contraseña. La extensión combina ese `listen_key` con un catálogo interno de canales (~99, tomado de `listen.radiotunes.com/premium_high.json`) para construir la URL de cada uno: `http://listen.radiotunes.com/premium_high/<canal>.pls?listen_key=<tu_key>`. Para obtener tu `listen_key`:
   1. Entra a tu cuenta en [radiotunes.com](https://www.radiotunes.com) con tu suscripción premium activa.
   2. Busca la opción para reproducir en un reproductor externo / dispositivo (Winamp, VLC, Sonos, Squeezebox…) — suele estar en la configuración de la cuenta.
@@ -64,7 +68,7 @@ sudo dnf install mpv
 - Fedora 44 (o cualquier distro con GNOME Shell 45–50)
 - Spotify instalado (versión de escritorio para Linux) — solo si usas esa fuente
 - Purrr instalado y corriendo — solo si usas esa fuente
-- `mpv` instalado — solo si usas Rainwave o RadioTunes
+- `mpv` instalado — solo si usas Rainwave, SmoothJazz o RadioTunes
 
 ## Instalación
 
@@ -119,8 +123,8 @@ rm -rf ~/.local/share/gnome-shell/extensions/powerzoid-music@cleal.cl
 
 | Acción | Resultado |
 |--------|-----------|
-| Click derecho | Abre el menú: Spotify / Purrr / Rainwave (6 estaciones) / RadioTunes (listen_key, favoritos, todos los canales), tamaño de letra |
-| Click en el texto de la barra | Spotify/Purrr: siguiente pista · Rainwave: siguiente estación · RadioTunes: siguiente favorito |
+| Click derecho | Abre el menú: Spotify / Purrr / Rainwave (6 estaciones) / SmoothJazz (2 señales) / RadioTunes (listen_key, favoritos, todos los canales), tamaño de letra |
+| Click en el texto de la barra | Spotify/Purrr: siguiente pista · Rainwave: siguiente estación · SmoothJazz: siguiente señal · RadioTunes: siguiente favorito |
 | Click en la carátula/ícono del popup | Alterna play/pausa (todas las fuentes) |
 | ☆/★ dentro del submenú RadioTunes | Añade o quita de favoritos el canal actualmente activo |
 
@@ -140,7 +144,7 @@ El texto se trunca automáticamente a 50 caracteres si es muy largo.
 powerzoid-music@cleal.cl/
 ├── metadata.json   # UUID, nombre, versiones de GNOME Shell compatibles
 ├── extension.js    # Lógica completa: proxy D-Bus, UI, selector de fuente, controles
-└── mpvPlayer.js     # Subproceso mpv + control IPC para Rainwave/RadioTunes
+└── mpvPlayer.js     # Subproceso mpv + control IPC para Rainwave/SmoothJazz/RadioTunes
 ```
 
 ## Licencia
