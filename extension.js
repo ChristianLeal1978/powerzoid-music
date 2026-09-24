@@ -24,9 +24,10 @@
  *    y track_history respectivamente) con título, artista y carátula de la
  *    canción actual, más precisa que el StreamTitle ICY genérico — se
  *    consulta aparte y se usa en su lugar. SmoothJazz.com no tiene una API
- *    así (es un servicio propio, no AudioAddict como RadioTunes), así que se
- *    queda con el StreamTitle ICY genérico que lee mpv, igual que cualquier
- *    fuente sin integración dedicada.
+ *    así (es un servicio propio, no AudioAddict como RadioTunes), así que el
+ *    título/artista salen del StreamTitle ICY genérico que lee mpv; la
+ *    carátula se busca aparte en iTunes a partir de ese mismo texto (ver
+ *    _pollSmoothjazzCoverArt).
  */
 
 import GLib from 'gi://GLib';
@@ -64,6 +65,12 @@ const RAINWAVE_API_URL = 'https://rainwave.cc/api4/info';
 // AudioAddict (red detrás de RadioTunes) también expone el historial de
 // reproducción de cada canal como JSON público, sin necesidad de listen_key.
 const RADIOTUNES_TRACK_HISTORY_URL = 'https://api.audioaddict.com/v1/radiotunes/track_history/channel';
+
+// SmoothJazz.com no publica su "now playing" en una API propia (ver más abajo):
+// lo único disponible es el StreamTitle ICY "Artista - Título" que mpv lee del
+// stream. Para conseguir carátula igual se busca esa pareja artista/título en
+// el buscador público de iTunes, sin API key, y se usa su artworkUrl100.
+const ITUNES_SEARCH_API_URL = 'https://itunes.apple.com/search';
 
 const RAINWAVE_STATIONS = [
     { id: 5, name: 'All',      url: 'https://rainwave.cc/tune_in/5.mp3.m3u' },
@@ -229,6 +236,7 @@ export default class PowerZoidMusicExtension {
         this._radioPollTimeoutId   = null;
         this._radioMediaTitle      = null;
         this._radioArtist          = null;
+        this._lastSmoothjazzTitle  = null;
 
         // Ítems del menú de selección de fuente
         this._spotifyMenuItem              = null;
@@ -585,6 +593,7 @@ export default class PowerZoidMusicExtension {
     _startRadioPlayback(url) {
         this._radioMediaTitle = null;
         this._radioArtist = null;
+        this._lastSmoothjazzTitle = null;
         this._songLabel.set_text(this._radioIdleLabel());
         this._setPopupGenericIcon();
         this._lastArtUrl = null;
@@ -596,6 +605,7 @@ export default class PowerZoidMusicExtension {
         this._stopRadioPoll();
         this._radioMediaTitle = null;
         this._radioArtist = null;
+        this._lastSmoothjazzTitle = null;
     }
 
     _toggleRadioPlayback() {
@@ -628,6 +638,7 @@ export default class PowerZoidMusicExtension {
         this._stopRadioPoll();
         this._radioMediaTitle = null;
         this._radioArtist = null;
+        this._lastSmoothjazzTitle = null;
         if (!this._isMprisSource(this._source)) {
             this._songLabel?.set_text(this._radioIdleLabel());
             this._updateRadioPopupContent();
@@ -651,6 +662,8 @@ export default class PowerZoidMusicExtension {
                     this._radioMediaTitle = title;
                     this._radioArtist = null;
                     this._applyRadioNowPlaying();
+                    if (this._source === SOURCE.SMOOTHJAZZ)
+                        this._pollSmoothjazzCoverArt(title);
                 });
             }
             return GLib.SOURCE_CONTINUE;
@@ -771,6 +784,65 @@ export default class PowerZoidMusicExtension {
                 }
             }
         );
+    }
+
+    // SmoothJazz solo entrega "Artista - Título" vía StreamTitle ICY (leído
+    // por mpv en el `else` de _startRadioPoll), sin carátula propia. Se busca
+    // esa pareja en el catálogo público de iTunes —sin API key— y se usa su
+    // artworkUrl100 en tamaño grande. Solo se dispara cuando el título ICY
+    // cambia, para no golpear la API en cada sondeo de 5s con la misma canción.
+    _pollSmoothjazzCoverArt(rawTitle) {
+        if (rawTitle === this._lastSmoothjazzTitle) return;
+        this._lastSmoothjazzTitle = rawTitle;
+
+        const parsed = this._parseIcyTitle(rawTitle);
+        if (!parsed) {
+            this._lastArtUrl = null;
+            this._loadCoverArt(null);
+            return;
+        }
+
+        const term = encodeURIComponent(`${parsed.artist} ${parsed.title}`);
+        Gio.File.new_for_uri(`${ITUNES_SEARCH_API_URL}?term=${term}&entity=song&limit=1`).load_contents_async(
+            null,
+            (file, result) => {
+                let contents;
+                try {
+                    [, contents] = file.load_contents_finish(result);
+                } catch (e) {
+                    console.error(`[powerzoid-music] iTunes search failed: ${e.message}`);
+                    return;
+                }
+                // La fuente o la canción pudieron cambiar mientras la petición
+                // estaba en vuelo.
+                if (this._source !== SOURCE.SMOOTHJAZZ || this._radioMediaTitle !== rawTitle)
+                    return;
+
+                try {
+                    const data = JSON.parse(new TextDecoder().decode(contents));
+                    const artwork = data?.results?.[0]?.artworkUrl100;
+                    const artUrl = artwork ? artwork.replace('100x100bb', '600x600bb') : null;
+                    if (artUrl !== this._lastArtUrl) {
+                        this._lastArtUrl = artUrl;
+                        this._loadCoverArt(artUrl);
+                    }
+                } catch (e) {
+                    console.error(`[powerzoid-music] iTunes search parse failed: ${e.message}`);
+                }
+            }
+        );
+    }
+
+    // El StreamTitle ICY típico trae "Artista - Título"; sin ese separador no
+    // hay forma confiable de distinguir artista de título para buscar carátula.
+    _parseIcyTitle(rawTitle) {
+        if (!rawTitle) return null;
+        const idx = rawTitle.indexOf(' - ');
+        if (idx === -1) return null;
+        const artist = rawTitle.slice(0, idx).trim();
+        const title = rawTitle.slice(idx + 3).trim();
+        if (!artist || !title) return null;
+        return { artist, title };
     }
 
     _radioIdleLabel() {
@@ -1375,15 +1447,17 @@ export default class PowerZoidMusicExtension {
     // Contenido del popup de hover cuando la fuente activa es una radio.
     // Rainwave y RadioTunes traen título/artista/carátula reales desde sus
     // respectivas APIs (ver _pollRainwaveNowPlaying / _pollRadiotunesNowPlaying).
-    // SmoothJazz no tiene una API así, así que se queda con el ícono genérico
-    // y el StreamTitle ICY que lee mpv (ver el `else` en _startRadioPoll).
+    // SmoothJazz no tiene una API de "now playing" propia, pero sí carátula:
+    // se busca en iTunes a partir del StreamTitle ICY (ver _pollSmoothjazzCoverArt).
     _updateRadioPopupContent() {
         if (!this._popup) return;
         const playing = this._mpvPlayer?.isPlaying ?? false;
 
-        // Para Rainwave/RadioTunes no se toca el ícono acá: ya lo actualiza
-        // el sondeo respectivo vía _loadCoverArt en cuanto llega la carátula.
-        if (this._source !== SOURCE.RAINWAVE && this._source !== SOURCE.RADIOTUNES)
+        // Para Rainwave/RadioTunes/SmoothJazz no se toca el ícono acá: ya lo
+        // actualiza el sondeo respectivo vía _loadCoverArt en cuanto llega
+        // la carátula (o el genérico si la búsqueda no encontró nada).
+        if (this._source !== SOURCE.RAINWAVE && this._source !== SOURCE.RADIOTUNES
+            && this._source !== SOURCE.SMOOTHJAZZ)
             this._setPopupGenericIcon();
 
         this._popupTitleLabel?.set_text(
