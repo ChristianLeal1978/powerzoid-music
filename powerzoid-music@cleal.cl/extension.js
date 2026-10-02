@@ -1312,7 +1312,10 @@ export default class PowerZoidMusicExtension {
         this._popupProgressFill = new St.Widget({
             x_align: Clutter.ActorAlign.START,
             y_align: Clutter.ActorAlign.FILL,
-            style: 'width: 0px; border-radius: 2px; background-color: #1DB954;',
+            y_expand: true,
+            width: 0,
+            height: 4,
+            style: 'border-radius: 2px; background-color: #1DB954;',
         });
         this._popupProgressTrack.add_child(this._popupProgressFill);
         this._popup.add_child(this._popupProgressTrack);
@@ -1439,9 +1442,7 @@ export default class PowerZoidMusicExtension {
         const ratio = this._trackLengthUs > 0
             ? Math.min(1, Math.max(0, positionUs / this._trackLengthUs)) : 0;
         const fillWidth = Math.round(ratio * PROGRESS_BAR_WIDTH);
-        this._popupProgressFill.set_style(
-            `width: ${fillWidth}px; border-radius: 2px; background-color: #1DB954;`
-        );
+        this._popupProgressFill.set_width(fillWidth);
     }
 
     // Contenido del popup de hover cuando la fuente activa es una radio.
