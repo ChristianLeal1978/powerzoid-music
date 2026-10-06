@@ -1304,15 +1304,14 @@ export default class PowerZoidMusicExtension {
         this._popup.add_child(infoBox);
 
         this._popupProgressTrack = new St.Widget({
-            layout_manager: new Clutter.BinLayout(),
             x_align: Clutter.ActorAlign.CENTER,
-            style: `width: ${PROGRESS_BAR_WIDTH}px; height: 4px; border-radius: 2px; ` +
-                   'background-color: rgba(255,255,255,0.2);',
+            width: PROGRESS_BAR_WIDTH,
+            height: 4,
+            style: 'border-radius: 2px; background-color: rgba(255,255,255,0.2);',
         });
         this._popupProgressFill = new St.Widget({
-            x_align: Clutter.ActorAlign.START,
-            y_align: Clutter.ActorAlign.FILL,
-            y_expand: true,
+            x: 0,
+            y: 0,
             width: 0,
             height: 4,
             style: 'border-radius: 2px; background-color: #1DB954;',
